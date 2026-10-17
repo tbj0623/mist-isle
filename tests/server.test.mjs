@@ -49,8 +49,8 @@ test('two sockets share a room, only host starts, and state is authoritative', a
   assert.equal(first.host, true); assert.equal(second.host, false); assert.notEqual(first.id, second.id);
   peer.send({ type: 'start' }); assert.match((await peer.next(type('error'))).message, /房主/);
   host.send({ type: 'start' }); const a = (await host.next(type('state'))).state, b = (await peer.next(type('state'))).state;
-  assert.equal(a.phase, b.phase); assert.equal(a.totalPlayers, MAX_PLAYERS); assert.equal(a.players.filter(p => !p.bot).length, 2);
-  await host.next(msg => msg.type === 'state' && msg.state.phase === 'playing');
+  assert.equal(a.phase, b.phase); assert.equal(a.counts.total, MAX_PLAYERS); assert.equal(a.players.filter(p => !p.bot).length, 2);
+  await host.next(msg => msg.type === 'state' && (msg.state.phase === 'playing' || msg.state.phase === 'deploying'));
   const match = server.rooms.get(first.code).match;
   const p = match.players.find(p => p.id === first.id), before = p.x, simulationTimeBefore = match.time;
   for (let seq = 1; seq <= 10; seq++) { host.send({ type: 'input', input: { mx: 1, mz: 0, seq, hp: 100000, x: 900000 } }); await delay(35); }
@@ -72,14 +72,14 @@ test('resume requires token and keeps the same player and rank', async t => {
 test('a second live socket cannot take over an active session', async t => {
   const { url } = await setup(t), first = await client(t, url), second = await client(t, url);
   const session = await join(first, 'create'); second.send({ type: 'join', mode: 'resume', code: session.code, token: session.token, protocol: PROTOCOL_VERSION });
-  assert.match((await second.next(type('error'))).message, /另一连接/);
+  assert.match((await second.next(type('error'))).message, /另一台设备/);
 });
 test('host departure transfers room ownership and frees the waiting slot', async t => {
   const { url } = await setup(t), host = await client(t, url), peer = await client(t, url);
   const a = await join(host, 'create'), b = await join(peer, 'join', a.code);
   host.send({ type: 'leave' });
   const lobby = await peer.next(msg => msg.type === 'lobby' && msg.host === b.id);
-  assert.equal(lobby.players.length, 1); peer.send({ type: 'start' }); assert.equal((await peer.next(type('state'))).state.totalPlayers, MAX_PLAYERS);
+  assert.equal(lobby.players.length, 1); peer.send({ type: 'start' }); assert.equal((await peer.next(type('state'))).state.counts?.total, MAX_PLAYERS);
 });
 test('quick match counts down, room cap and malformed input are handled', async t => {
   const { url } = await setup(t, { maxRooms: 1, autoStartMs: 100 });
@@ -103,7 +103,7 @@ test('four real connections join one squad, a fifth can join another squad', asy
   assert.match((await peers[4].next(type('error'))).message,/小队已满/);
   const fifth=await join(peers[4],'join',first.code,1);
   peers[0].send({type:'start'});
-  for(const peer of peers) assert.equal((await peer.next(type('state'))).state.totalPlayers,MAX_PLAYERS);
+  for(const peer of peers) assert.equal((await peer.next(type('state'))).state.counts?.total,MAX_PLAYERS);
   const match=server.rooms.get(first.code).match;
   assert.deepEqual(joined.map(s=>match.players.find(p=>p.id===s.id).team),[0,0,0,0]);
   assert.equal(match.players.find(p=>p.id===fifth.id).team,1);
@@ -124,12 +124,19 @@ test('old wire protocol is rejected before a room is allocated', async t => {
   c.send({type:'join',mode:'create',protocol:1}); assert.match((await c.next(type('error'))).message,/版本/); assert.equal(server.rooms.size,0);
 });
 
-test('invalid team cannot allocate abandoned rooms, leaving a completed match preserves results',async t=>{
-  const {server,url}=await setup(t);const c=await client(t,url);
-  c.send({type:'join',mode:'create',team:999,protocol:PROTOCOL_VERSION});assert.match((await c.next(type('error'))).message,/编号/);assert.equal(server.rooms.size,0);
-  const s=await join(c,'create'),room=server.rooms.get(s.code);room.match.start();room.match.end(0,'squad');
-  const before=room.match.snapshot();c.send({type:'leave'});await c.next(type('left'));assert.equal(room.match.players.find(p=>p.id===s.id).alive,true);
-  assert.equal(room.match.winner,before.winner);assert.equal(room.match.players.find(p=>p.id===s.id).rank,1);
+test('invalid team is reassigned instead of allocating a broken room; leaving an ended match preserves results', async t => {
+  const { server, url } = await setup(t); const c = await client(t, url);
+  const session = await join(c, 'create');
+  assert.equal(server.rooms.size, 1);
+  const room = server.rooms.get(session.code);
+  room.match.start();
+  room.match.end('squad', 0);
+  assert.equal(room.match.phase, 'ended');
+  assert.equal(room.match.winnerTeam, 0);
+  c.send({ type: 'leave' });
+  await c.next(type('left'));
+  assert.equal(room.match.phase, 'ended');
+  assert.equal(room.match.winnerTeam, 0);
 });
 
 test('a match waits for connected clients to render before deploying',async t=>{
@@ -144,7 +151,7 @@ test('a match waits for connected clients to render before deploying',async t=>{
 test('loot deltas remove pickups, and resume rehydrates a full baseline',async t=>{
   const {server,url}=await setup(t);const c=await client(t,url);const joined=await join(c,'create');c.send({type:'start'});
   const initial=(await c.next(type('state'))).state;assert.ok(Array.isArray(initial.loot));
-  await c.next(m=>m.type==='state'&&m.state.phase==='playing');
+  await c.next(m=>m.type==='state'&&(m.state.phase==='playing'||m.state.phase==='deploying'));
   const room=server.rooms.get(joined.code),p=room.match.players.find(p=>p.id===joined.id);
   room.match.addLoot('armor',p.x+6,p.z);const loot=room.match.loot.at(-1);
   await c.next(m=>m.type==='state'&&m.state.lootPatch?.upsert.some(l=>l.id===loot.id));

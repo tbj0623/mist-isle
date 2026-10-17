@@ -473,8 +473,10 @@ function iconBtn(label, iconName, handler, extraClass = '') {
 function diffDots(level) {
   const wrap = h('span', 'diff-dots');
   wrap.setAttribute('aria-label', `难度 ${level} / 3`);
+  // 样式表只给了 .diff-dot，容器用内联 flex 保证横排（不改 style.css）
+  wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px';
   for (let i = 0; i < 3; i++) {
-    const dot = h('i', i < level ? 'on' : '');
+    const dot = h('i', `diff-dot${i < level ? ' on' : ''}`);
     wrap.append(dot);
   }
   return wrap;
@@ -570,15 +572,20 @@ const HOME_NAV = [
 function buildHome() {
   const el = makeScreen('home');
   const body = h('div', 'screen-body home-body');
-  const hero = h('div', 'home-hero');
-  const eyebrow = h('div', 'eyebrow', 'TACTICAL SURVIVAL · 64 PLAYERS');
-  const logo = h('div', 'home-logo');
-  const cn = h('h1', 'title-xl home-logo-cn', '雾岛突围');
-  const en = h('div', 'home-logo-en', 'MIST ISLE');
-  const tag = h('p', 'tagline', '雾散了，活到最后的人才能离开。');
-  logo.append(cn, en, tag);
-  hero.append(eyebrow, logo);
 
+  // 左侧：标题 + 标语（杂志式排版）
+  const hero = h('div', 'home-hero');
+  hero.append(h('div', 'eyebrow', 'TACTICAL SURVIVAL · 64 PLAYERS'));
+  const logo = h('div', 'home-logo');
+  logo.append(
+    h('h1', 'home-logo-cn', '雾岛突围'),
+    h('div', 'home-logo-en', 'MIST ISLE'),
+    h('p', 'tagline', '雾散了，活到最后的人才能离开。'),
+  );
+  hero.append(logo);
+  body.append(hero);
+
+  // 导航
   const nav = h('div', 'home-nav');
   nav.setAttribute('role', 'navigation');
   nav.setAttribute('aria-label', '主菜单导航');
@@ -594,15 +601,22 @@ function buildHome() {
     dot.dataset.badge = item.id;
     dot.style.display = 'none';
     btn.append(dot);
-    btn.addEventListener('click', () => openScreen(item.id));
+    btn.addEventListener('click', () => { playAudio('ui_click'); openScreen(item.id); });
     nav.append(btn);
   }
+  body.append(nav);
+
+  // 底部：版本/提示在左，玩家卡片在右下
+  const foot = h('div', 'home-foot');
+  const hint = h('span', 'hint', touchDevice ? '左摇杆移动 · 右摇杆瞄准开火' : 'WASD 移动 · 鼠标瞄准射击 · Esc 呼出菜单');
+  const version = h('span', 'version', `v${VERSION} · BUILD 1.0.0`);
+  version.id = 'version-label';
+  foot.append(hint, version);
 
   const player = h('aside', 'player-card');
   player.id = 'player-card';
   const levelRing = h('div', 'level-ring');
-  const levelNum = h('b', 'js-level', '1');
-  levelRing.append(levelNum, h('small', null, 'LV'));
+  levelRing.append(h('b', 'js-level', '1'), h('small', null, 'LV'));
   const metaWrap = h('div', 'player-meta');
   const nameLine = h('b', 'player-name', OWNER_NAME);
   nameLine.id = 'player-name-home';
@@ -613,18 +627,13 @@ function buildHome() {
   fill.dataset.role = 'xp-fill';
   bar.append(fill);
   const creditLine = h('div', 'currency');
-  creditLine.append(icon('coin', 14), h('b', 'js-credits', '0'), h('small', null, '信用点'));
+  creditLine.append(h('b', 'js-credits', '0'), h('small', null, '信用点'));
   metaWrap.append(nameLine, rankLine, bar, creditLine);
   player.append(levelRing, metaWrap);
 
-  const foot = h('footer', 'home-foot');
-  const hint = h('span', 'hint muted', touchDevice ? '触屏操作 · 左摇杆移动 · 右摇杆瞄准开火' : 'WASD 移动 · 鼠标瞄准射击 · Esc 呼出菜单');
-  const version = h('span', 'version', `v${VERSION} · BUILD 1.0.0`);
-  version.id = 'version-label';
-  foot.append(hint, version);
-  const row = h('div', 'home-bottom');
-  row.append(player, foot);
-  body.append(hero, nav, row);
+  const bottom = h('div', 'home-bottom');
+  bottom.append(foot, player);
+  body.append(bottom);
   el.append(body);
   return el;
 }
@@ -855,7 +864,8 @@ function buildLoadout() {
   const chipHead = h('div', 'panel-head');
   chipHead.append(h('h3', null, '消耗品'), h('small', 'muted', '开局携带一种'));
   chipPanel.append(chipHead);
-  const chipBody = h('div', 'chip-row panel-body');
+  const chipBody = h('div', 'panel-body');
+  const chipRow = h('div', 'chip-row');
   for (const id of CONSUMABLE_LIST) {
     const def = itemTable()[id] || { name: id };
     const btn = h('button', 'chip');
@@ -863,10 +873,13 @@ function buildLoadout() {
     btn.dataset.consumable = id;
     btn.id = `consumable-${id}`;
     btn.setAttribute('aria-label', `${def.name}，开局携带`);
-    btn.append(h('b', null, def.name), h('small', 'muted', def.desc || ''));
+    btn.title = def.desc || def.name || '';
+    btn.append(h('b', null, def.name || id));
+    if (def.heal) btn.append(h('small', null, `+${def.heal} 生命`));
     btn.addEventListener('click', () => equipConsumable(id));
-    chipBody.append(btn);
+    chipRow.append(btn);
   }
+  chipBody.append(chipRow, h('p', 'field-help', '开局携带一组；对局内仍可在战场拾取更多。'));
   chipPanel.append(chipBody);
   content.append(chipPanel);
 
@@ -874,7 +887,8 @@ function buildLoadout() {
   const throwHead = h('div', 'panel-head');
   throwHead.append(h('h3', null, '投掷物'), h('small', 'muted', '开局携带一种'));
   throwPanel.append(throwHead);
-  const throwBody = h('div', 'chip-row panel-body');
+  const throwBody = h('div', 'panel-body');
+  const throwRow = h('div', 'chip-row');
   for (const id of THROWABLE_LIST) {
     const def = itemTable()[id] || { name: id };
     const btn = h('button', 'chip throwable-chip');
@@ -882,10 +896,13 @@ function buildLoadout() {
     btn.dataset.throwable = id;
     btn.id = `throwable-${id}`;
     btn.setAttribute('aria-label', `${def.name}，开局携带`);
-    btn.append(h('b', null, def.name), h('small', 'muted', def.desc || ''));
+    btn.title = def.desc || def.name || '';
+    btn.append(h('b', null, def.name || id));
+    if (def.damage) btn.append(h('small', null, `${def.damage} 伤害`));
     btn.addEventListener('click', () => equipThrowable(id));
-    throwBody.append(btn);
+    throwRow.append(btn);
   }
+  throwBody.append(throwRow);
   throwPanel.append(throwBody);
   content.append(throwPanel);
 
@@ -928,17 +945,17 @@ function renderLoadout() {
     const card = $(`#loadout-slot-${def.key}`, el);
     if (!card) continue;
     const w = weaponOf(lo[def.key]);
-    const name = $('.item-name', card);
-    const sub = $('.slot-info small', card);
+    const nameNode = $('.slot-body b', card);
+    const subNode = $('.slot-body small', card);
     const art = $('.slot-art', card);
-    setText(name, w?.name || '未装备');
-    setText(sub, w ? `${w.cls || '通用'} · ${rarityName(w.rarity)} · 伤害 ${w.damage || DASH}` : '点击选择武器');
+    const locked = !!w && (w.unlock || 1) > playerLevel();
+    setText(nameNode, w?.name || def.name);
+    setText(subNode, w ? `${w.cls || '通用'} · ${rarityName(w.rarity)} · 伤害 ${w.damage || DASH}${locked ? ' · 未解锁' : ''}` : '点击选择武器');
     card.classList.toggle('empty', !w);
-    card.classList.toggle('locked', !!w && !isUnlocked('weapons', lo[def.key]) && (w.unlock || 1) > playerLevel());
+    card.classList.toggle('locked', locked);
     if (art) {
       clear(art);
-      const gun = h('i', 'slot-art-gun');
-      art.append(gun);
+      art.append(icon(w ? 'target' : 'plus', 22));
       if (w) art.style.setProperty('--rarity', rarityColor(w.rarity));
     }
   }
@@ -946,12 +963,20 @@ function renderLoadout() {
     const btn = $(`#attach-${slot.id}`, el);
     if (!btn) continue;
     const equipped = currentAttachment('primary').filter(id => attachmentTable()[id]?.slot === slot.id);
-    const value = $('b', btn);
+    const value = $('.slot-body b', btn);
     setText(value, equipped.length ? attachmentTable()[equipped[0]]?.name || equipped[0] : '空');
     btn.classList.toggle('filled', equipped.length > 0);
   }
-  for (const btn of el.querySelectorAll('[data-consumable]')) btn.classList.toggle('active', btn.dataset.consumable === (lo.consumable || 'medkit'));
-  for (const btn of el.querySelectorAll('[data-throwable]')) btn.classList.toggle('active', btn.dataset.throwable === (lo.throwable || 'frag'));
+  for (const btn of el.querySelectorAll('[data-consumable]')) {
+    const active = btn.dataset.consumable === (lo.consumable || 'medkit');
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+  for (const btn of el.querySelectorAll('[data-throwable]')) {
+    const active = btn.dataset.throwable === (lo.throwable || 'frag');
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
   renderSkins();
   renderLoadoutStats();
 }
@@ -1364,10 +1389,6 @@ function flashReward(xp, coin) {
 
 // ── 13 · 图鉴 ───────────────────────────────────────────────────────────────
 function buildCodex() {
-  const el = makeScreen('codex');
-  const bar = makeChrome('codex');
-  el.bar = bar;
-  el.append(bar);
   const head = screenHead('CODEX', '战场档案', '武器、配件、道具、地图与敌人的完整资料。点击卡片查看详情。');
 
   const tabs = h('div', 'tabs codex-tabs');
@@ -2859,4 +2880,26 @@ export function hideResultDialog() { hideResult(); }
 export function showCodexDetail(kind, id) { openCodexDetail(kind, id); }
 export function showHelp() { showHelpDialog(); }
 export function confirmAction(options) { confirmDialog(options); }
+
+/** 关闭最上层弹窗（Android 返回键 / Esc 用）。返回 true 表示确实关掉了一个。 */
+export function closeTopDialog() {
+  const node = topDialog();
+  if (!node) return false;
+  if (node.id === 'pause-dialog') hidePause();
+  else if (node.id === 'result-dialog') hideResult();
+  else if (node.id === 'room-dialog') hideRoom();
+  else if (node.id === 'map-dialog') hideDialog('map-dialog');
+  else hideDialog(node.id);
+  return true;
+}
+
+/** 当前昵称（main.js 组队/开局时读取）。 */
+export function getNickname() {
+  const input = document.getElementById('nickname');
+  const raw = String(input?.value ?? netState.nickname ?? OWNER_NAME).replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 14);
+  return raw || OWNER_NAME;
+}
+
+/** 设置某个屏幕为当前屏幕（供 main.js 在启动时调用）。 */
+export function showHome() { openScreen('home'); }
 

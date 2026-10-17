@@ -9930,3 +9930,508 @@ svg {
 .card {
   min-width: 0;
 }
+
+/* ── HUD 定位修正（Lead）：击杀播报不与小地图重叠、武器面板不压按钮 ─────── */
+#hud .killfeed,
+#hud #killfeed {
+  position: absolute;
+  right: calc(var(--safe-r) + 18px);
+  top: calc(var(--safe-t) + 168px);
+  width: min(320px, 34vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 6;
+}
+
+#hud .killfeed > * { max-width: 100%; }
+
+#hud .weapon-panel,
+#hud #weapon-panel {
+  bottom: calc(var(--safe-b) + 14px);
+  right: calc(var(--safe-r) + 16px);
+}
+
+#hud .weapon-panel .tactical-buttons,
+#hud .weapon-panel .throw-buttons {
+  position: static;
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  justify-content: flex-end;
+}
+
+/* 手机横屏：缩小顶部信息条，避免与安全区文字挤压 */
+@media (max-height: 460px) {
+  #hud .hud-top { gap: 6px; }
+  #hud .hud-top .stat-pill,
+  #hud .hud-top .zone-pill { padding: 4px 8px; font-size: 11px; }
+  #hud #killfeed { top: calc(var(--safe-t) + 118px); width: min(240px, 40vw); }
+  #hud .squad-panel { transform: scale(0.86); transform-origin: top left; }
+}
+
+/* ==========================================================================
+   38 · 模式卡 / 地图卡 内部排版（覆盖前面按旧 DOM 写的规则）
+   --------------------------------------------------------------------------
+   uiux 实际 DOM：
+     .mode-pick > .mode-icon + .mode-body(> .mode-name,.mode-en,.mode-desc) + .mode-meta
+     .map-pick  > .map-art + .map-body(> .row>.map-name, .map-sub, .map-desc, .map-tags) + .map-diff
+   ========================================================================== */
+.mode-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 0;
+  padding: clamp(12px, 1.1vw, 16px);
+}
+
+.mode-pick > .mode-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 2px;
+}
+
+.mode-pick > .mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mode-pick .mode-name {
+  color: var(--text-hi);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+}
+
+.mode-pick .mode-en {
+  display: block;
+  color: var(--text-ghost);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.mode-pick .mode-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--text-lo);
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+}
+
+.mode-pick > .mode-meta {
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mode-pick > .mode-meta::before {
+  display: none;
+}
+
+/* 地图卡 */
+.map-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.map-pick .map-art {
+  position: relative;
+  flex: 0 0 auto;
+  height: clamp(62px, 10vh, 96px);
+  width: 100%;
+}
+
+.map-pick .map-body,
+.map-pick .map-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 0;
+  min-width: 0;
+}
+
+.map-pick .map-body > .row,
+.map-pick .map-info > .row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.map-pick .map-name {
+  padding: 0;
+  color: var(--text-hi);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.map-pick .map-sub {
+  padding: 0;
+  color: var(--text-ghost);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-pick .map-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 1px;
+  padding: 0;
+  color: var(--text-lo);
+  font-size: var(--fs-2xs);
+  line-height: 1.45;
+}
+
+.map-pick .map-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.map-pick .map-tags .chip {
+  height: 20px;
+  min-height: 20px;
+  padding: 0 7px;
+  font-size: 9px;
+  cursor: default;
+}
+
+.map-pick .map-diff {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding: 9px 12px 12px;
+}
+
+.map-pick .map-diff small {
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.map-pick .map-diff .muted {
+  color: var(--text-dim);
+}
+
+/* ── HUD 修正第二版（Lead）：按 ui-hud 实际类名重新定位 ───────────────────── */
+#hud .killfeed {
+  position: absolute;
+  top: calc(var(--safe-t) + 132px);
+  right: calc(var(--safe-r) + 18px);
+  width: min(320px, 32vw);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 7;
+}
+
+#hud .killfeed .killfeed-row,
+#hud .killfeed > div {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(6, 20, 20, 0.72);
+  border: 1px solid rgba(111, 224, 200, 0.14);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-mid);
+  backdrop-filter: blur(6px);
+  animation: fadeUp 220ms var(--ease-out) both;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+#hud .killfeed .killfeed-row.self { border-color: rgba(245, 180, 69, 0.5); color: #ffe0a8; }
+#hud .killfeed .killfeed-row.down { border-color: rgba(240, 120, 90, 0.35); }
+
+/* 小地图容器：确保地图名在圆盘下方，不与击杀播报重叠 */
+#hud .minimap-wrap,
+#hud .hud-map {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+#hud .hud-map .map-name { font-size: 11px; letter-spacing: 0.08em; }
+
+/* 中央提示（换弹/救援/拾取）统一位置，避免与准星/武器面板重叠 */
+#hud .context-hint,
+#hud #context-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-b) + 96px);
+  transform: translateX(-50%);
+  z-index: 8;
+  white-space: nowrap;
+}
+
+/* 阶段横幅：中央偏上，不与顶部信息条打架 */
+#hud .phase-banner {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-t) + 84px);
+  transform: translateX(-50%);
+  z-index: 9;
+  text-align: center;
+}
+
+@media (max-height: 460px) {
+  #hud .killfeed { top: calc(var(--safe-t) + 96px); width: min(220px, 36vw); }
+  #hud .killfeed .killfeed-row { font-size: 10px; padding: 3px 7px; }
+  #hud .context-hint { bottom: calc(var(--safe-b) + 74px); font-size: 11px; }
+  #hud .phase-banner { top: calc(var(--safe-t) + 58px); }
+  #hud .phase-banner b { font-size: 15px; }
+}
+
+/* ==========================================================================
+   39 · 最终覆盖层：首页纵向节奏 / 卡片等高 / 小屏 HUD 稳定
+   （放在文件末尾以确保优先级最高；只覆盖布局，不改视觉语言）
+   ========================================================================== */
+[data-screen="home"] .screen-body.home-body {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  row-gap: clamp(14px, 2.4vh, 30px);
+  align-content: stretch;
+  justify-content: stretch;
+  padding-top: clamp(10px, 3.4vh, 46px);
+  padding-bottom: clamp(10px, 2.4vh, 26px);
+}
+
+[data-screen="home"] .home-hero {
+  max-width: min(760px, 64%);
+  padding: 0;
+}
+
+[data-screen="home"] .home-nav {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(56px, auto);
+  gap: clamp(6px, 0.9vw, 12px);
+  align-content: start;
+  align-self: start;
+  width: min(1000px, 100%);
+  max-width: min(1000px, 78vw);
+}
+
+[data-screen="home"] .home-nav-item {
+  min-height: 56px;
+  height: 100%;
+}
+
+[data-screen="home"] .home-bottom {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  align-self: end;
+  margin-top: 0;
+  min-width: 0;
+}
+
+[data-screen="home"] .home-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-lo);
+  text-align: right;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.8);
+}
+
+[data-screen="home"] .home-foot .hint,
+[data-screen="home"] .home-foot .version {
+  color: var(--text-lo);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.06em;
+}
+
+[data-screen="home"] .player-card {
+  width: clamp(272px, 26vw, 336px);
+  flex: 0 0 auto;
+}
+
+/* 卡片等高（同一栅格行内视觉整齐） */
+.mode-grid > .mode-pick,
+.map-row > .map-pick,
+.store-grid > .card,
+.codex-grid > .codex-card,
+.ach-grid > .ach-card {
+  height: 100%;
+}
+
+/* 面板内直接文本节点补齐内边距（uiux 常把 <p>/<ul> 直接塞进 .panel） */
+.panel > ul,
+.panel > ol {
+  padding: 0 var(--sp-4) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.panel > ul > li,
+.panel > ol > li {
+  color: var(--text-lo);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.panel > ul > li::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--c-teal-400);
+}
+
+/* 小屏 HUD：顶部条不挤压，避免 zone/stage/weather 挤压菜单按钮 */
+@media (max-height: 500px) {
+  #hud .hud-top {
+    gap: 4px;
+    max-width: calc(100vw - 24px);
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  #hud .hud-top .hud-stats,
+  #hud .hud-top .zone-pill,
+  #hud .hud-top .hud-stage {
+    padding: 3px 7px;
+  }
+
+  #hud .hud-top .hud-weather,
+  #hud .hud-top .fps-meter {
+    display: none;
+  }
+
+  #hud .hud-alive small,
+  #hud .hud-kills small {
+    display: none;
+  }
+
+  #hud .hud-alive-sub {
+    display: inline;
+  }
+
+  #hud #killfeed {
+    max-width: 42vw;
+  }
+}
+
+/* 桌面：右侧播报与小地图不相撞 */
+@media (min-width: 1000px) {
+  #hud #killfeed {
+    top: calc(var(--safe-t) + var(--hud-pad) + calc(150 * var(--hud-u)));
+    right: calc(var(--safe-r) + var(--hud-pad));
+  }
+}
+
+/* 小屏 HUD：击杀播报夹在小地图与武器板之间，限制高度避免重叠 */
+@media (max-height: 500px) {
+  #hud #killfeed,
+  #hud .killfeed {
+    top: calc(var(--safe-t) + var(--hud-pad) + calc(122 * var(--hud-u)));
+    right: calc(var(--safe-r) + var(--hud-pad));
+    left: auto;
+    transform: none;
+    max-width: 40vw;
+    max-height: calc(100vh - var(--safe-t) - var(--safe-b) - calc(322 * var(--hud-u)));
+    overflow: hidden;
+    align-items: flex-end;
+  }
+
+  /* 小屏武器板贴右下角，为播报让出垂直空间 */
+  #hud .weapon-panel {
+    bottom: calc(var(--safe-b) + var(--hud-pad) + calc(96 * var(--hud-u)));
+  }
+
+  /* 生命板与其上方战术按钮之间留出空隙 */
+  #hud #health-panel {
+    bottom: calc(var(--safe-b) + var(--hud-pad) + calc(96 * var(--hud-u)));
+  }
+}
+
+/* ==========================================================================
+   40 · 触屏控件可见性兜底
+   --------------------------------------------------------------------------
+   仅用 (pointer:coarse) 判定在部分 WebView / 桌面模拟环境会漏判，
+   这里按「窄高比」补一条：短边 ≤ 500 且宽度 ≤ 1000 → 视为触屏横屏。
+   ========================================================================== */
+@media (max-height: 500px) and (max-width: 1000px) {
+  #touch-controls {
+    display: block;
+  }
+
+  #action-buttons,
+  .action-buttons {
+    display: flex;
+  }
+
+  #tactical-buttons,
+  .tactical-buttons {
+    display: flex;
+  }
+}
+
+/* 触屏/小屏：主操作按 44px 命中盒，视觉 46–52px */
+@media (max-height: 500px) {
+  #hud .action-btn,
+  #hud .touch-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* 摇杆在小屏不要压住生命板 */
+@media (max-height: 500px) {
+  #hud #move-stick {
+    left: calc(var(--safe-l) + 8px);
+    bottom: calc(var(--safe-b) + 8px);
+  }
+
+  #hud #aim-stick {
+    right: calc(var(--safe-r) + 8px);
+    bottom: calc(var(--safe-b) + 8px);
+  }
+}
