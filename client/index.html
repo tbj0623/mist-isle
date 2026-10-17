@@ -3,91 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-  <meta name="theme-color" content="#152c2d">
+  <meta name="theme-color" content="#0d1a1d">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
   <title>雾岛突围 · MIST ISLE</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./style.css">
   <script src="./app.js" defer></script>
 </head>
 <body>
-  <canvas id="world" aria-label="雾岛 3D 游戏场景"></canvas>
-  <div id="boot"><img src="./icon.svg" alt=""><span>正在抵达雾岛</span></div>
-  <div id="menu" class="screen">
-    <div class="menu-shade"></div>
-    <header class="topbar">
-      <a class="brand" href="#" aria-label="雾岛突围首页"><img src="./icon.svg" alt=""><span>MIST ISLE<small>雾岛突围</small></span></a>
-      <nav aria-label="主导航"><button class="nav-button active" id="nav-play">出击<span>01</span></button><button class="nav-button" id="nav-help">作战指南<span>02</span></button></nav>
-      <div class="top-actions"><span class="build-label"><i></i>开发中 · 四人小队</span><button class="icon-button" id="settings-open" aria-label="设置">⚙</button><button class="icon-button" id="fullscreen" aria-label="切换全屏">⛶</button></div>
-    </header>
-    <main class="menu-content">
-      <section class="intro">
-        <div class="eyebrow"><span class="tiny-cross">+</span> DROP IN. STAND LAST.</div>
-        <h1>雾岛<span>突围<span class="title-dot">.</span></span></h1>
-        <p class="tagline">并肩降落，一起突围。</p>
-        <p class="intro-copy">信号风暴正在逼近。<br>带上你的勇气，在这座岛上留下名字。</p>
-        <div class="intro-tags"><span>俯视角生存竞技</span><b> / </b><span>原创低多边形世界</span></div>
-      </section>
-      <aside class="deploy-panel">
-        <div class="panel-top"><span class="status-dot"></span>行动准备室<span class="serial">OP. 001</span></div>
-        <div class="map-card"><div class="map-grid"></div><span class="map-coordinates">N 24° / E 118°</span><div class="island-shape"><i></i><i></i><i></i><b>+</b></div><div class="map-name"><small>作战区域</small><strong>青岚岛</strong><span>QINGLAN ISLAND</span></div><span class="map-index">01</span></div>
-        <div class="mission-specs"><div><small>战局容量</small><b>64 <em>席</em></b></div><div><small>小队编制</small><b>4 <em>人</em></b></div><div><small>战斗时长</small><b>≈ 6 <em>分钟</em></b></div></div>
-        <button id="online-open" class="button primary"><span><small>SQUAD UP</small>好友联机</span><span class="button-arrow">↗</span></button>
-        <button id="train" class="button secondary"><span>单人训练</span><span class="keycap">开始</span></button>
-        <p class="panel-note"><span>◈</span> 四人同队 · 空位由 AI 补齐 · 训练模式离线可玩</p>
-      </aside>
-      <div class="scene-caption"><span class="caption-line"></span><div>准备空降<small>八处区域。和队友一起活到最后。</small></div><span class="caption-arrow">↘</span></div>
-    </main>
-    <footer class="menu-footer"><span>生存不是运气，是你的每一个选择。</span><div><span class="keyboard-hint">W A S D</span> 移动 <span class="footer-separator">/</span> 鼠标瞄准射击</div><span>BUILD 0.2.0 <b>✦</b></span></footer>
+  <canvas id="world" aria-label="雾岛游戏场景"></canvas>
+  <div id="boot">
+    <div class="boot-mark"><img src="./icon.svg" alt=""></div>
+    <div class="boot-title">MIST ISLE<small>雾岛突围</small></div>
+    <div class="boot-bar"><i></i></div>
+    <p class="boot-hint">正在连接雾岛战区…</p>
   </div>
-
-  <div id="hud" class="screen hidden">
-    <div class="hud-top"><div class="stat-pill"><small id="alive-label">存活小队</small><b id="alive-count">6</b><span></span><small>淘汰</small><b id="kill-count">0</b></div><div id="zone-status" class="zone-pill">安全区稳定</div><button id="game-menu" class="icon-button" aria-label="局内菜单">☰</button></div>
-    <div class="hud-map"><canvas id="minimap" width="160" height="160" aria-label="小地图"></canvas><span id="net-status">离线训练</span></div>
-    <div id="squad-panel" class="squad-panel" aria-label="曙光小队"><div class="squad-heading"><span id="squad-name">曙光小队</span><small id="squad-alive">4 / 4</small></div><div id="squad-members"></div></div>
-    <div id="killfeed" aria-live="polite"></div>
-    <div id="phase-banner" class="phase-banner hidden"></div>
-    <div id="context-hint" class="context-hint"></div>
-    <div id="health-panel" class="health-panel"><div class="player-line"><b id="player-name">旅人</b><span id="health-value">100</span></div><div class="health-track"><div id="health-bar"></div></div><div class="armor-track"><div id="armor-bar"></div></div><small id="player-state">保持移动，注意安全区</small></div>
-    <div class="weapon-panel"><small id="weapon-name">P9 手枪</small><div><b id="ammo">12</b><span>/</span><span id="reserve">72</span></div><button id="swap-action" title="Q 切换武器" aria-label="切换武器">Q · <span id="second-weapon">空枪位</span></button><span id="action-progress"></span></div>
-    <div class="desktop-controls">WASD 移动 · R 换弹 · E 救援/交互 · Q 换枪 · G 手雷 · F 烟雾 · P 标记</div>
-    <div id="touch-controls"><div id="move-stick" class="joystick" aria-label="移动摇杆"><span></span><small>移动</small></div><div id="aim-stick" class="joystick aim-stick" aria-label="瞄准与射击摇杆"><span>⌖</span><small>瞄准 / 开火</small></div></div>
-    <div class="action-buttons"><button id="heal-action" aria-label="使用医疗包">✚<small id="med-count">1</small></button><button id="reload-action" aria-label="换弹">↻<small>换弹</small></button><button id="interact-action" aria-label="交互或上下车">⇄<small id="interact-label">交互</small></button></div>
-    <div class="tactical-buttons"><button id="grenade-action" title="G 投掷手雷" aria-label="投掷手雷"><span>手雷</span><small id="grenade-count">2</small></button><button id="smoke-action" title="F 投掷烟雾" aria-label="投掷烟雾"><span>烟雾</span><small id="smoke-count">1</small></button><button id="ping-action" title="P 标记集合点" aria-label="标记集合点"><span>标记</span><small>P</small></button></div>
-    <div id="damage-vignette"></div>
-  </div>
-
-  <dialog id="online-dialog" class="modal">
-    <button class="modal-close" data-close="online-dialog" aria-label="关闭">×</button><div class="eyebrow">CONNECT & SURVIVE</div><h2>一起抵达雾岛</h2><p class="muted">连接同一台服务器，用邀请码集合。</p>
-    <label>呼号<input id="nickname" maxlength="14" placeholder="输入你的名字" autocomplete="nickname" value="旅人"></label>
-    <div class="mode-fields"><label>对局模式<select id="game-mode"><option value="squad">四人小队</option><option value="solo">单人生存</option></select></label><label>加入的小队<select id="squad-choice" aria-label="选择小队"></select></label></div>
-    <label>服务器地址<input id="server-address" type="text" inputmode="url" placeholder="ws://电脑局域网IP:8787" autocomplete="off" autocapitalize="off" spellcheck="false"></label><p class="field-help">同 Wi-Fi 填电脑 IP；远程联机填已部署的 wss:// 地址。</p>
-    <div class="join-row"><input id="room-code" aria-label="房间邀请码" maxlength="5" placeholder="5 位邀请码" autocapitalize="characters" autocomplete="off"><button id="join-room" class="button secondary">加入房间</button></div>
-    <div class="modal-actions"><button id="create-room" class="button primary">创建好友房间 <span>↗</span></button><button id="quick-match" class="button secondary">快速匹配</button></div>
-    <p id="online-error" class="error-text" role="status"></p>
-  </dialog>
-
-  <dialog id="room-dialog" class="modal room-modal"><div class="eyebrow">YOUR TEAM, YOUR ISLAND</div><h2>战前集合</h2><div class="room-code-display"><small>战局邀请码</small><b id="current-code">-----</b></div><p id="room-hint" class="muted">好友填写同一邀请码并选择同一小队</p><div id="room-players"></div><p class="field-help">战局容量 64 席，每队 4 人。其他朋友可选不同小队加入同局，空位在开局时由 AI 补齐。</p><div class="modal-actions"><button id="start-room" class="button primary">全员出击 ↗</button><button id="leave-room" class="button secondary">退出房间</button></div></dialog>
-
-  <dialog id="help-dialog" class="modal help-modal">
-    <button class="modal-close" data-close="help-dialog" aria-label="关闭">×</button>
-    <div class="eyebrow">FIELD MANUAL / 01</div><h2>小队活着，才算胜利。</h2>
-    <div class="help-grid">
-      <article><b>01</b><h3>四人协同</h3><p>好友填写同一战局邀请码并选择同一小队。队友显示在左侧与小地图上，按 P 或标记按钮发送集合点。其他朋友可进入不同队伍同场竞技。</p></article>
-      <article><b>02</b><h3>倒地救援</h3><p>有站立队友时致命伤会使你倒地。倒地后可爬行，有 30 秒等待救援；队友靠近并静止按住交互 4 秒救起。移动、开火或受击打断救援。</p></article>
-      <article><b>03</b><h3>物资与风暴</h3><p>28 秒后缩圈。双枪各自保留弹夹，按 Q 切换。G 手雷、F 烟雾，空投会标在地图上；到达落点后交互开箱。医疗包需静止使用 2.5 秒。</p></article>
-      <article><b>04</b><h3>同车作战</h3><p>四人可同乘越野车，司机专注驾驶，乘员可以射击。司机离车后由在车队友接替；全队倒地即淘汰。单排模式没有队友救援。</p></article>
-    </div>
-    <p class="control-help">WASD 移动 · 鼠标瞄准/射击 · R 换弹 · H 治疗 · E 救援/换枪/上下车<br>手机：左摇杆移动 · 右摇杆瞄准开火 · 按住救援 · 武器栏切枪</p>
-  </dialog>
-
-  <dialog id="settings-dialog" class="modal"><button class="modal-close" data-close="settings-dialog" aria-label="关闭">×</button><div class="eyebrow">PREFERENCES</div><h2>作战设置</h2><label class="setting-row">游戏音效<input type="checkbox" id="sound-toggle" checked></label><label class="setting-row">画质<select id="quality"><option value="balanced">均衡</option><option value="low">流畅</option><option value="high">清晰</option></select></label><p class="field-help">所有模型与音效为程序生成。此版本不含付费项目。</p></dialog>
-
-  <dialog id="pause-dialog" class="modal"><button class="modal-close" data-close="pause-dialog" aria-label="关闭">×</button><div class="eyebrow">TAKE A BREATH</div><h2>局内菜单</h2><p id="pause-note" class="muted"></p><div class="modal-actions"><button class="button primary" data-close="pause-dialog">继续战斗</button><button id="exit-match" class="button secondary">退出本局</button></div></dialog>
-
-  <dialog id="result-dialog" class="modal result-modal"><div class="eyebrow" id="result-eyebrow">MISSION COMPLETE</div><div class="rank-display" id="rank-display">#1</div><h2 id="result-title">雾岛幸存者</h2><p class="muted" id="result-subtitle"></p><div class="result-stats"><div><small>淘汰</small><b id="result-kills">0</b></div><div><small>生存时间</small><b id="result-time">00:00</b></div><div><small>模式</small><b id="result-mode">训练</b></div></div><div class="modal-actions"><button id="return-home" class="button primary">返回准备室 ↗</button><button id="spectate" class="button secondary">继续观战</button></div></dialog>
-
-  <div id="reconnect" class="connection-overlay hidden"><div><span class="status-dot"></span><h2>连接正在恢复</h2><p id="reconnect-text">角色暂留原地，20 秒内恢复可继续战斗。</p><button id="cancel-reconnect" class="button secondary">返回准备室</button></div></div>
-  <div id="toast" role="status"></div>
-  <div id="rotate-hint">↻ <span>横屏游玩，视野更开阔</span></div>
+  <div id="screen-root"></div>
+  <div id="hud" class="hidden"></div>
+  <div id="dialog-root"></div>
+  <div id="fx-overlay"></div>
+  <div id="toast-root" role="status" aria-live="polite"></div>
+  <div id="rotate-hint"><span>↻</span>横屏游玩，视野更开阔</div>
 </body>
 </html>
