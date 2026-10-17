@@ -1,0 +1,13 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ args: ['--use-gl=angle','--use-angle=d3d11','--enable-unsafe-swiftshader'] });
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+const page = await ctx.newPage();
+page.on('pageerror', e => console.log('PAGEERROR', e.stack ? e.stack.split('\n').slice(0,6).join('\n') : e.message));
+await page.goto('http://127.0.0.1:8787/', { waitUntil:'domcontentloaded' });
+await page.waitForFunction(() => !!window.mistIsle, { timeout: 15000 });
+await page.waitForTimeout(1200);
+await page.click('#nav-play');
+await page.click('#btn-offline');
+await page.waitForTimeout(6000);
+await page.screenshot({ path: 'artifacts/diag-battle2.png' });
+await browser.close();

@@ -228,6 +228,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 全局底噪只覆盖「无界面时」的底色区域，绝不叠加在 3D 场景上：
+   局内 #hud 打开时 body::before 被压暗，保证画面干净。 */
 body::before {
   content: "";
   position: fixed;
@@ -240,16 +242,7 @@ body::before {
     linear-gradient(180deg, #041012 0%, #061314 46%, #030b0c 100%);
 }
 
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0.5;
-  background-image: var(--tex-noise);
-  mix-blend-mode: overlay;
-}
+/* 启动 / 局外界面才有雾噪点纹理（见 .screen-bg::after 与 #boot::after） */
 
 /* 输入框 / 可滚动区放开手势与选择 */
 input,
@@ -776,7 +769,9 @@ canvas#world {
   justify-content: center;
   gap: var(--sp-4);
   padding: 24px;
-  background: rgba(3, 10, 11, 0.96);
+  background:
+    radial-gradient(80% 60% at 50% 44%, rgba(24, 74, 70, 0.5), transparent 70%),
+    #030b0c;
   color: var(--text-mid);
   text-align: center;
   font-size: var(--fs-body);
@@ -792,10 +787,39 @@ canvas#world {
   pointer-events: none;
 }
 
+/* 旋转图标 */
+#rotate-hint > b,
+#rotate-hint > .rotate-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: rgba(111, 224, 200, 0.08);
+  color: var(--c-teal-300);
+  font-size: 24px;
+  font-weight: 400;
+  animation: rotateHint 2.6s var(--ease-in-out) infinite;
+}
+
+@keyframes rotateHint {
+  0%, 22% { transform: rotate(0deg); }
+  52%, 78% { transform: rotate(-90deg); }
+  100% { transform: rotate(-90deg); }
+}
+
 #rotate-hint span {
   max-width: 22em;
   color: var(--text-lo);
   line-height: var(--lh-body);
+}
+
+#rotate-hint small {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 /* ==========================================================================
@@ -3821,15 +3845,17 @@ button.list-row:active {
   position: relative;
 }
 
-[class*="rarity-"]::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  border-radius: inherit;
-  box-shadow: 0 0 0 1px var(--rarity) inset;
-  opacity: 0.85;
+/* 稀有度描边只落在块级容器上（文字标签 .rarity-tag 不要描边） */
+.card[class*="rarity-"],
+.codex-card[class*="rarity-"],
+.skin-card[class*="rarity-"],
+.slot[class*="rarity-"],
+.ach-card[class*="rarity-"],
+.list-row[class*="rarity-"],
+.store-item[class*="rarity-"],
+.item-art[class*="rarity-"] {
+  outline: 1px solid rgba(var(--rarity-rgb), 0.5);
+  outline-offset: -1px;
 }
 
 .card[class*="rarity-"],
@@ -3859,13 +3885,17 @@ button.list-row:active {
   color: var(--rarity);
 }
 
-.rarity-legendary,
-.rarity-epic {
-  --rarity-glow-size: 26px;
-}
-
-.rarity-legendary::before,
-.rarity-epic::before {
+/* 流光：只挂在卡片容器上，避免覆盖 .panel 的纹理伪元素 */
+.card.rarity-legendary::before,
+.card.rarity-epic::before,
+.codex-card.rarity-legendary::before,
+.codex-card.rarity-epic::before,
+.skin-card.rarity-legendary::before,
+.skin-card.rarity-epic::before,
+.slot.rarity-legendary::before,
+.slot.rarity-epic::before,
+.ach-card.rarity-legendary::before,
+.ach-card.rarity-epic::before {
   content: "";
   position: absolute;
   inset: -1px;
@@ -4621,11 +4651,11 @@ dialog.modal[open]::backdrop {
    手机横屏 640×360 仍保证可读（最小字号 9px / 点击区 44px）。
    ========================================================================== */
 #hud {
-  --hud-u: clamp(0.82, calc(100vmin / 720), 1.6);
-  --hud-pad: calc(12px * var(--hud-u));
-  --hud-gap: calc(8px * var(--hud-u));
-  --hud-font: calc(10px * var(--hud-u));
-  --hud-radius: calc(3px * var(--hud-u));
+  --hud-u: clamp(0.82px, calc(100vmin / 720), 1.6px);
+  --hud-pad: calc(12 * var(--hud-u));
+  --hud-gap: calc(8 * var(--hud-u));
+  --hud-font: calc(10 * var(--hud-u));
+  --hud-radius: calc(3 * var(--hud-u));
   color: var(--text-mid);
   font-size: var(--hud-font);
 }
@@ -4652,7 +4682,7 @@ dialog.modal[open]::backdrop {
   display: flex;
   align-items: center;
   gap: var(--hud-gap);
-  padding: calc(6px * var(--hud-u)) calc(10px * var(--hud-u));
+  padding: calc(6 * var(--hud-u)) calc(10 * var(--hud-u));
   border: 1px solid rgba(151, 214, 199, 0.18);
   border-radius: var(--hud-radius);
   background: rgba(4, 15, 16, 0.62);
@@ -4675,7 +4705,7 @@ dialog.modal[open]::backdrop {
   display: flex;
   align-items: baseline;
   gap: 4px;
-  padding: 0 calc(4px * var(--hud-u));
+  padding: 0 calc(4 * var(--hud-u));
   white-space: nowrap;
 }
 
@@ -4686,7 +4716,7 @@ dialog.modal[open]::backdrop {
   color: var(--text-hi);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: calc(17px * var(--hud-u));
+  font-size: calc(17 * var(--hud-u));
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -4695,7 +4725,7 @@ dialog.modal[open]::backdrop {
 .hud-alive small,
 .hud-kills small {
   color: var(--text-dim);
-  font-size: calc(8px * var(--hud-u));
+  font-size: calc(8 * var(--hud-u));
   letter-spacing: 0.14em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -4709,8 +4739,8 @@ dialog.modal[open]::backdrop {
 .hud-kills::before {
   content: "";
   align-self: center;
-  width: calc(5px * var(--hud-u));
-  height: calc(5px * var(--hud-u));
+  width: calc(5 * var(--hud-u));
+  height: calc(5 * var(--hud-u));
   margin-right: 2px;
   border-radius: 50%;
   background: var(--c-teal-400);
@@ -4736,14 +4766,14 @@ dialog.modal[open]::backdrop {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: calc(4px * var(--hud-u)) calc(9px * var(--hud-u));
+  padding: calc(4 * var(--hud-u)) calc(9 * var(--hud-u));
   border: 1px solid rgba(151, 214, 199, 0.18);
   border-radius: var(--hud-radius);
   background: rgba(4, 15, 16, 0.6);
   color: var(--text-mid);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: calc(10px * var(--hud-u));
+  font-size: calc(10 * var(--hud-u));
   letter-spacing: 0.06em;
   white-space: nowrap;
   -webkit-backdrop-filter: blur(8px);
@@ -4753,8 +4783,8 @@ dialog.modal[open]::backdrop {
 .zone-pill::before,
 .hud-timer::before {
   content: "";
-  width: calc(6px * var(--hud-u));
-  height: calc(6px * var(--hud-u));
+  width: calc(6 * var(--hud-u));
+  height: calc(6 * var(--hud-u));
   border-radius: 50%;
   background: var(--c-teal-400);
   box-shadow: 0 0 8px rgba(111, 224, 200, 0.9);
@@ -4793,8 +4823,8 @@ dialog.modal[open]::backdrop {
 .hud-menu-btn {
   display: grid;
   place-items: center;
-  width: calc(36px * var(--hud-u));
-  height: calc(36px * var(--hud-u));
+  width: calc(36 * var(--hud-u));
+  height: calc(36 * var(--hud-u));
   min-width: 34px;
   min-height: 34px;
   padding: 0;
@@ -4815,8 +4845,8 @@ dialog.modal[open]::backdrop {
 
 #game-menu svg,
 #pause-btn svg {
-  width: calc(17px * var(--hud-u));
-  height: calc(17px * var(--hud-u));
+  width: calc(17 * var(--hud-u));
+  height: calc(17 * var(--hud-u));
   stroke: currentColor;
   fill: none;
   stroke-width: 1.9;
@@ -4829,7 +4859,7 @@ dialog.modal[open]::backdrop {
 .net-status {
   color: rgba(195, 214, 207, 0.6);
   font-family: var(--font-mono);
-  font-size: calc(8px * var(--hud-u));
+  font-size: calc(8 * var(--hud-u));
   letter-spacing: 0.08em;
   white-space: nowrap;
 }
@@ -4853,4 +4883,3395 @@ dialog.modal[open]::backdrop {
   color: var(--c-amber-400);
 }
 
-/* APPEND */
+/* ==========================================================================
+   20 · HUD · 小地图
+   ========================================================================== */
+#hud .hud-map {
+  position: absolute;
+  top: calc(var(--safe-t) + var(--hud-pad));
+  right: calc(var(--safe-r) + var(--hud-pad));
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.minimap-wrap {
+  position: relative;
+  display: block;
+  padding: calc(3 * var(--hud-u));
+  border: 1px solid rgba(151, 214, 199, 0.24);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.66);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 12px 34px -26px rgba(0, 0, 0, 1), 0 0 0 1px rgba(3, 11, 12, 0.6) inset;
+  overflow: hidden;
+  clip-path: polygon(
+    calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px), 0 0
+  );
+}
+
+/* 若 .minimap-wrap 不嵌在 .hud-map 里，也给出正确位置 */
+#hud > .minimap-wrap,
+#hud > canvas#minimap {
+  position: absolute;
+  top: calc(var(--safe-t) + var(--hud-pad));
+  right: calc(var(--safe-r) + var(--hud-pad));
+  z-index: 3;
+}
+
+.minimap-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: var(--tex-grid-fine);
+  opacity: 0.3;
+}
+
+#minimap,
+.minimap-wrap canvas {
+  display: block;
+  width: calc(132 * var(--hud-u));
+  height: calc(132 * var(--hud-u));
+  max-width: 168px;
+  max-height: 168px;
+  border-radius: calc(var(--hud-radius) - 1px);
+  background: #06181a;
+  image-rendering: auto;
+}
+
+.minimap-zoom {
+  position: absolute;
+  right: calc(4 * var(--hud-u));
+  bottom: calc(4 * var(--hud-u));
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: calc(22 * var(--hud-u));
+  height: calc(22 * var(--hud-u));
+  min-width: 20px;
+  min-height: 20px;
+  border: 1px solid rgba(151, 214, 199, 0.26);
+  border-radius: var(--hud-radius);
+  background: rgba(3, 12, 13, 0.72);
+  color: var(--text-lo);
+  font-size: calc(9 * var(--hud-u));
+  line-height: 1;
+}
+
+.minimap-zoom:hover {
+  color: var(--c-teal-300);
+  border-color: var(--line-accent);
+}
+
+.minimap-zoom svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+}
+
+.map-weather,
+.map-coord {
+  color: rgba(195, 214, 207, 0.62);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* 小地图方向刻度 */
+.minimap-wrap .compass {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.minimap-wrap .compass::before,
+.minimap-wrap .compass::after {
+  content: "";
+  position: absolute;
+  background: rgba(151, 214, 199, 0.35);
+}
+
+.minimap-wrap .compass::before {
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 6px;
+  transform: translateX(-50%);
+}
+
+.minimap-wrap .compass::after {
+  top: 50%;
+  left: 0;
+  width: 6px;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+/* ==========================================================================
+   21 · HUD · 小队面板
+   ========================================================================== */
+#squad-panel,
+.squad-panel {
+  position: absolute;
+  top: calc(var(--safe-t) + var(--hud-pad) + calc(46 * var(--hud-u)));
+  left: calc(var(--safe-l) + var(--hud-pad));
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: calc(3 * var(--hud-u));
+  width: calc(158 * var(--hud-u));
+  max-width: 210px;
+  min-width: 132px;
+  padding: calc(6 * var(--hud-u)) calc(7 * var(--hud-u));
+  border: 1px solid rgba(151, 214, 199, 0.16);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.56);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  backdrop-filter: blur(10px) saturate(1.1);
+  pointer-events: none;
+}
+
+.squad-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding-bottom: calc(4 * var(--hud-u));
+  border-bottom: 1px solid rgba(151, 214, 199, 0.12);
+  color: var(--text-hi);
+  font-size: calc(9 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.squad-heading small,
+.squad-heading .squad-count {
+  color: var(--c-teal-400);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.04em;
+}
+
+#squad-members {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--hud-u));
+}
+
+.squad-member {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: calc(5 * var(--hud-u));
+  min-height: calc(20 * var(--hud-u));
+  padding: calc(2 * var(--hud-u)) calc(5 * var(--hud-u));
+  border-left: 2px solid rgba(111, 224, 200, 0.55);
+  border-radius: 2px;
+  background: rgba(9, 28, 28, 0.4);
+  color: var(--text-mid);
+  font-size: calc(9 * var(--hud-u));
+  line-height: 1.25;
+}
+
+.squad-member i,
+.squad-member .dot {
+  width: calc(5 * var(--hud-u));
+  height: calc(5 * var(--hud-u));
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--c-teal-400);
+  box-shadow: 0 0 6px rgba(111, 224, 200, 0.8);
+}
+
+.squad-member b,
+.squad-member .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-hi);
+  font-weight: 600;
+}
+
+.squad-member small,
+.squad-member .hp {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0;
+}
+
+.squad-member.self {
+  border-left-color: var(--c-amber-500);
+  background: rgba(245, 180, 69, 0.1);
+}
+
+.squad-member.self small {
+  color: var(--c-amber-400);
+}
+
+.squad-member.downed {
+  border-left-color: var(--c-orange-500);
+  background: rgba(255, 154, 92, 0.12);
+  color: #ffd2b3;
+}
+
+.squad-member.downed i {
+  background: var(--c-orange-500);
+  animation: dotPulse 0.8s var(--ease-in-out) infinite;
+}
+
+.squad-member.eliminated,
+.squad-member.dead {
+  opacity: 0.42;
+  border-left-color: var(--text-ghost);
+  filter: grayscale(0.6);
+}
+
+.squad-member.eliminated i {
+  background: var(--text-ghost);
+  box-shadow: none;
+}
+
+.squad-member.offline {
+  opacity: 0.55;
+}
+
+.squad-member .revive-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 154, 92, 0.18);
+  overflow: hidden;
+}
+
+.squad-member .revive-bar > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 0;
+  background: var(--c-amber-500);
+  box-shadow: 0 0 6px rgba(245, 180, 69, 0.9);
+  transition: width 120ms linear;
+}
+
+/* 队友方位指示（可选节点） */
+.squad-member .dir {
+  flex: 0 0 auto;
+  color: var(--c-teal-400);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+}
+
+/* ==========================================================================
+   22 · HUD · 生命 / 耐力 / 消耗品（左下）
+   ========================================================================== */
+#health-panel,
+.health-panel {
+  position: absolute;
+  left: calc(var(--safe-l) + var(--hud-pad));
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(46 * var(--hud-u)));
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: calc(5 * var(--hud-u));
+  width: calc(228 * var(--hud-u));
+  max-width: 300px;
+  min-width: 190px;
+  padding: calc(8 * var(--hud-u)) calc(10 * var(--hud-u));
+  border: 1px solid rgba(151, 214, 199, 0.16);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.58);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  backdrop-filter: blur(10px) saturate(1.1);
+  clip-path: polygon(
+    0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%
+  );
+}
+
+.health-panel .player-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.player-line b,
+.health-panel .player-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-hi);
+  font-size: calc(10 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.player-line span,
+#health-value {
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: calc(16 * var(--hud-u));
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.health-track,
+.armor-track,
+.stamina-track {
+  position: relative;
+  width: 100%;
+  height: calc(7 * var(--hud-u));
+  min-height: 5px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(3, 11, 12, 0.72);
+  box-shadow: 0 0 0 1px rgba(151, 214, 199, 0.14) inset;
+}
+
+.armor-track {
+  height: calc(4 * var(--hud-u));
+  min-height: 3px;
+}
+
+.stamina-track {
+  height: calc(3 * var(--hud-u));
+  min-height: 2px;
+}
+
+.health-track > i,
+.health-track > div,
+#health-bar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2fd0a8, var(--c-teal-400));
+  box-shadow: 0 0 12px rgba(111, 224, 200, 0.55);
+  transform-origin: 0 50%;
+  transition: width var(--dur-3) var(--ease-out), background-color var(--dur-3);
+}
+
+.armor-track > i,
+.armor-track > div,
+#armor-bar {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #5a8cff, #9dc0ff);
+  box-shadow: 0 0 10px rgba(120, 165, 255, 0.5);
+  transition: width var(--dur-3) var(--ease-out);
+}
+
+.stamina-track > i,
+.stamina-track > div,
+#stamina-bar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(245, 180, 69, 0.85);
+  transition: width 100ms linear, opacity var(--dur-2);
+}
+
+/* 血量分档：中危 / 濒危 */
+.health-panel.mid .health-track > i,
+.health-panel.mid #health-bar {
+  background: linear-gradient(90deg, #e8b13c, var(--c-amber-400));
+  box-shadow: 0 0 12px rgba(245, 180, 69, 0.55);
+}
+
+.health-panel.low .health-track > i,
+.health-panel.low #health-bar,
+.health-panel.critical .health-track > i {
+  background: linear-gradient(90deg, #e8474f, var(--c-red-500));
+  box-shadow: 0 0 14px rgba(255, 92, 92, 0.6);
+  animation: healthPulse 1.1s var(--ease-in-out) infinite;
+}
+
+.health-panel.low .player-line span,
+.health-panel.low #health-value {
+  color: var(--c-red-400);
+}
+
+.health-panel.downed {
+  border-color: rgba(255, 154, 92, 0.4);
+}
+
+.health-panel.downed .health-track > i,
+.health-panel.downed #health-bar {
+  background: linear-gradient(90deg, #d97a3c, var(--c-orange-500));
+  animation: healthPulse 0.9s var(--ease-in-out) infinite;
+}
+
+.health-panel.downed .player-line span {
+  color: #ffbd9b;
+}
+
+.health-panel > small,
+.health-panel #player-state {
+  color: var(--text-dim);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.06em;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#consumables,
+.consumables {
+  display: flex;
+  gap: calc(4 * var(--hud-u));
+  margin-top: calc(2 * var(--hud-u));
+}
+
+#consumables .touch-btn,
+.consumable {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: calc(30 * var(--hud-u));
+  height: calc(30 * var(--hud-u));
+  min-width: 30px;
+  min-height: 30px;
+  border: 1px solid rgba(151, 214, 199, 0.2);
+  border-radius: var(--hud-radius);
+  background: rgba(3, 12, 13, 0.6);
+  color: var(--text-lo);
+  font-size: calc(12 * var(--hud-u));
+  line-height: 1;
+  transition: border-color var(--dur-2), color var(--dur-2), background-color var(--dur-2);
+}
+
+#consumables .touch-btn:hover,
+.consumable:hover {
+  color: var(--c-teal-300);
+  border-color: var(--line-accent);
+  background: rgba(111, 224, 200, 0.1);
+}
+
+#consumables .count,
+.consumable .count {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  color: var(--c-amber-400);
+}
+
+/* ==========================================================================
+   23 · HUD · 武器面板（右下）
+   ========================================================================== */
+.weapon-panel,
+#weapon-panel {
+  position: absolute;
+  right: calc(var(--safe-r) + var(--hud-pad));
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(40 * var(--hud-u)));
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: calc(2 * var(--hud-u));
+  min-width: calc(168 * var(--hud-u));
+  max-width: 260px;
+  padding: calc(7 * var(--hud-u)) calc(10 * var(--hud-u));
+  border: 1px solid rgba(151, 214, 199, 0.16);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.58);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  backdrop-filter: blur(10px) saturate(1.1);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+  pointer-events: none;
+}
+
+.weapon-panel > * {
+  pointer-events: auto;
+}
+
+#weapon-name,
+.weapon-panel .weapon-name {
+  color: var(--text-hi);
+  font-size: calc(9 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+#weapon-rarity,
+.weapon-rarity {
+  font-family: var(--font-mono);
+  font-size: calc(7 * var(--hud-u));
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rarity, var(--text-dim));
+}
+
+.weapon-panel .ammo-row,
+.weapon-panel > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: calc(3 * var(--hud-u));
+  width: 100%;
+}
+
+#ammo,
+.weapon-panel .ammo {
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: calc(28 * var(--hud-u));
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.6);
+}
+
+#ammo.empty,
+.weapon-panel.empty #ammo,
+.weapon-panel .ammo.empty {
+  color: var(--c-red-400);
+}
+
+#reserve,
+.weapon-panel .reserve {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: calc(11 * var(--hud-u));
+  letter-spacing: 0;
+}
+
+.weapon-panel > div > span.sep,
+.weapon-panel .slash {
+  color: var(--text-ghost);
+  font-size: calc(11 * var(--hud-u));
+}
+
+/* 换弹进度 */
+#reload-progress,
+.reload-progress {
+  position: relative;
+  width: 100%;
+  height: calc(3 * var(--hud-u));
+  min-height: 2px;
+  margin-top: calc(2 * var(--hud-u));
+  border-radius: 2px;
+  background: rgba(151, 214, 199, 0.16);
+  overflow: hidden;
+}
+
+#reload-progress > i,
+.reload-progress > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, var(--c-amber-600), var(--c-amber-400));
+  box-shadow: 0 0 8px rgba(245, 180, 69, 0.8);
+  transition: width 80ms linear;
+}
+
+/* 投掷物快捷栏 */
+#throwables,
+.throwables {
+  display: flex;
+  gap: calc(4 * var(--hud-u));
+  margin-top: calc(3 * var(--hud-u));
+}
+
+.throw-btn,
+#throwables .touch-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: calc(26 * var(--hud-u));
+  height: calc(26 * var(--hud-u));
+  min-width: 26px;
+  min-height: 26px;
+  border: 1px solid rgba(151, 214, 199, 0.18);
+  border-radius: var(--hud-radius);
+  background: rgba(3, 12, 13, 0.6);
+  color: var(--text-lo);
+  font-size: calc(10 * var(--hud-u));
+  line-height: 1;
+}
+
+.throw-btn.active,
+.throw-btn[aria-pressed="true"] {
+  border-color: var(--line-accent);
+  color: var(--c-teal-300);
+  background: rgba(111, 224, 200, 0.14);
+}
+
+.throw-btn .count {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  color: var(--c-amber-400);
+}
+
+/* 切枪按钮（uiux 用 #swap-action.touch-btn，也兼容按钮式） */
+#swap-action {
+  margin-top: calc(3 * var(--hud-u));
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: calc(26 * var(--hud-u));
+  padding: 0 8px;
+  border: 1px solid rgba(151, 214, 199, 0.18);
+  border-radius: var(--hud-radius);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-lo);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+#swap-action:hover {
+  color: var(--text-hi);
+  border-color: var(--line-strong);
+}
+
+#swap-action span {
+  font-size: calc(8 * var(--hud-u));
+}
+
+/* 桌面操作提示 */
+.desktop-controls {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-b) + var(--hud-pad));
+  z-index: 1;
+  transform: translateX(-50%);
+  color: rgba(195, 214, 207, 0.42);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   24 · HUD · 准星 / 命中 / 受伤方向 / 屏幕滤镜
+   ========================================================================== */
+.crosshair,
+#crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 5;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  pointer-events: none;
+  opacity: 0.92;
+  transition: opacity var(--dur-2), transform var(--dur-1) var(--ease-out);
+}
+
+.crosshair::before,
+.crosshair::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: rgba(233, 251, 244, 0.92);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  transform: translate(-50%, -50%);
+}
+
+.crosshair::before {
+  width: 2px;
+  height: 100%;
+  clip-path: polygon(0 0, 100% 0, 100% 32%, 0 32%, 0 68%, 100% 68%, 100% 100%, 0 100%);
+}
+
+.crosshair::after {
+  width: 100%;
+  height: 2px;
+  clip-path: polygon(0 0, 32% 0, 32% 100%, 0 100%, 68% 0, 100% 0, 100% 100%, 68% 100%);
+}
+
+.crosshair .dot,
+.crosshair i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--c-teal-300);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 6px rgba(111, 224, 200, 0.9);
+}
+
+/* 开火扩散 */
+.crosshair.firing,
+.crosshair.fire {
+  transform: scale(1.42);
+}
+
+.crosshair.hit {
+  transform: scale(0.84);
+}
+
+.crosshair.enemy {
+  opacity: 1;
+}
+
+.crosshair.enemy::before,
+.crosshair.enemy::after {
+  background: var(--c-red-400);
+}
+
+/* 命中标记 */
+.hitmarker,
+#hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 6;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(1.5);
+}
+
+.hitmarker::before,
+.hitmarker::after,
+#hitmarker::before,
+#hitmarker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 100%;
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+}
+
+.hitmarker::before,
+#hitmarker::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.hitmarker::after,
+#hitmarker::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.hitmarker.show,
+#hitmarker.show,
+.hitmarker.active {
+  animation: hitFlash 240ms var(--ease-out);
+}
+
+.hitmarker.kill::before,
+.hitmarker.kill::after,
+#hitmarker.kill::before,
+#hitmarker.kill::after {
+  background: var(--c-red-500);
+  box-shadow: 0 0 8px rgba(255, 92, 92, 0.95);
+}
+
+.hitmarker.headshot::before,
+.hitmarker.headshot::after,
+#hitmarker.headshot::before,
+#hitmarker.headshot::after {
+  background: var(--c-amber-400);
+  box-shadow: 0 0 8px rgba(245, 180, 69, 0.95);
+}
+
+/* 受伤方向指示 */
+.damage-directions,
+.damage-dir-layer {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 4;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.damage-dir,
+.damage-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 180px;
+  height: 180px;
+  margin: -90px 0 0 -90px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from calc(var(--dir, 0deg) - 15deg),
+    transparent 0deg,
+    rgba(255, 92, 92, 0.75) 15deg,
+    transparent 30deg
+  );
+  mask-image: radial-gradient(closest-side, transparent 54%, #000 56%, #000 78%, transparent 80%);
+  -webkit-mask-image: radial-gradient(closest-side, transparent 54%, #000 56%, #000 78%, transparent 80%);
+  transform: rotate(0deg);
+  opacity: 0;
+  animation: damageFlash 900ms var(--ease-out) forwards;
+}
+
+.damage-dir.heavy,
+.damage-indicator.heavy {
+  background: conic-gradient(
+    from calc(var(--dir, 0deg) - 22deg),
+    transparent 0deg,
+    rgba(255, 92, 92, 1) 22deg,
+    transparent 44deg
+  );
+}
+
+/* 全屏受伤暗角 / 闪光 */
+#damage-vignette,
+.damage-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(120% 100% at 50% 50%, transparent 42%, rgba(140, 12, 18, 0.55) 84%, rgba(110, 6, 12, 0.78) 100%);
+  transition: opacity 180ms var(--ease-out);
+}
+
+#damage-vignette.show,
+#damage-vignette.active,
+.damage-vignette.show {
+  opacity: 1;
+  animation: vignettePulse 700ms var(--ease-out) forwards;
+}
+
+#damage-vignette.heal,
+.damage-vignette.heal {
+  background: radial-gradient(120% 100% at 50% 50%, transparent 46%, rgba(28, 168, 132, 0.34) 100%);
+}
+
+#damage-vignette.shield,
+.damage-vignette.shield {
+  background: radial-gradient(120% 100% at 50% 50%, transparent 46%, rgba(86, 140, 255, 0.34) 100%);
+}
+
+/* 低血量持续心跳（由 HUD 加类） */
+.low-hp-overlay,
+#hud.low-hp::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: radial-gradient(120% 100% at 50% 50%, transparent 52%, rgba(150, 14, 20, 0.4) 100%);
+  animation: healthPulse 1.3s var(--ease-in-out) infinite;
+}
+
+/* 闪光弹 / 黑夜滤镜 */
+#fx-overlay .flash-white {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  animation: flashBang 1.6s var(--ease-out) forwards;
+}
+
+#fx-overlay .grayscale {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0.72;
+  mix-blend-mode: saturation;
+}
+
+#fx-overlay .vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 100% at 50% 50%, transparent 50%, rgba(0, 0, 0, 0.85) 100%);
+}
+
+/* ==========================================================================
+   25 · HUD · 击杀播报 / 阶段横幅 / 交互提示
+   ========================================================================== */
+#killfeed,
+.killfeed {
+  position: absolute;
+  top: calc(var(--safe-t) + var(--hud-pad) + calc(38 * var(--hud-u)));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: calc(3 * var(--hud-u));
+  width: max-content;
+  max-width: min(42vw, 360px);
+  pointer-events: none;
+}
+
+/* 宽屏把小地图右侧的空档让给播报会显得偏左，这里用 grid 收敛到中偏右 */
+@media (min-width: 1000px) {
+  #killfeed,
+  .killfeed {
+    left: auto;
+    right: calc(var(--safe-r) + var(--hud-pad));
+    top: calc(var(--safe-t) + var(--hud-pad) + calc(158 * var(--hud-u)));
+    transform: none;
+    align-items: flex-end;
+  }
+}
+
+.killfeed-row,
+#killfeed > div,
+.killfeed .row {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--hud-u));
+  padding: calc(3 * var(--hud-u)) calc(8 * var(--hud-u));
+  border: 1px solid rgba(151, 214, 199, 0.14);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.66);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--text-lo);
+  font-size: calc(9 * var(--hud-u));
+  line-height: 1.3;
+  white-space: nowrap;
+  animation: killfeedIn 260ms var(--ease-out) both;
+}
+
+.killfeed-row.out,
+#killfeed > div.out {
+  animation: killfeedOut 320ms var(--ease-in-out) forwards;
+}
+
+.killfeed-row b,
+#killfeed > div b,
+.killfeed .killer,
+.killfeed .victim {
+  color: var(--text-hi);
+  font-weight: 700;
+}
+
+.killfeed .victim {
+  color: var(--c-red-400);
+}
+
+.killfeed .weapon,
+.killfeed-row .weapon,
+.killfeed small {
+  color: var(--c-amber-400);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.04em;
+}
+
+.killfeed .headshot::after,
+.killfeed-row.headshot::after {
+  content: "⌖";
+  color: var(--c-amber-500);
+  font-size: calc(9 * var(--hud-u));
+}
+
+.killfeed .scene,
+.killfeed-row .scene {
+  color: var(--c-teal-400);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.08em;
+}
+
+.killfeed .you,
+.killfeed-row.you {
+  border-color: var(--line-amber);
+  background: rgba(56, 38, 8, 0.72);
+}
+
+.killfeed .you b,
+.killfeed-row.mine {
+  color: var(--c-amber-300);
+}
+
+/* 自身击杀横幅 */
+.kill-banner,
+#kill-banner {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--hud-u));
+  transform: translateX(-50%);
+  color: var(--c-amber-400);
+  font-family: var(--font-mono);
+  font-size: calc(11 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  text-shadow: 0 0 22px rgba(245, 180, 69, 0.6);
+  pointer-events: none;
+  opacity: 0;
+  animation: killBanner 1.8s var(--ease-out) forwards;
+}
+
+.kill-banner b,
+#kill-banner b {
+  color: #fff;
+  letter-spacing: 0.12em;
+}
+
+/* 阶段横幅（空投/缩圈/波次） */
+.phase-banner,
+#phase-banner {
+  position: absolute;
+  left: 50%;
+  top: 16%;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transform: translateX(-50%);
+  padding: calc(7 * var(--hud-u)) calc(20 * var(--hud-u));
+  border-top: 1px solid rgba(245, 180, 69, 0.5);
+  border-bottom: 1px solid rgba(245, 180, 69, 0.5);
+  background: linear-gradient(90deg, transparent, rgba(4, 15, 16, 0.82) 18%, rgba(4, 15, 16, 0.82) 82%, transparent);
+  color: var(--c-amber-300);
+  font-family: var(--font-mono);
+  font-size: calc(13 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: phaseIn 420ms var(--ease-out) both;
+}
+
+.phase-banner small,
+#phase-banner small {
+  color: var(--text-lo);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.18em;
+}
+
+.phase-banner.danger {
+  border-color: rgba(255, 92, 92, 0.55);
+  color: var(--c-red-400);
+}
+
+.phase-banner.accent {
+  border-color: rgba(111, 224, 200, 0.5);
+  color: var(--c-teal-300);
+}
+
+.phase-banner.hidden {
+  display: none !important;
+}
+
+/* 交互 / 救援提示 */
+.context-hint,
+.interact-prompt,
+#interact-prompt,
+.revive-prompt,
+#revive-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 26%;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--hud-u));
+  transform: translateX(-50%);
+  padding: calc(6 * var(--hud-u)) calc(14 * var(--hud-u));
+  border: 1px solid rgba(151, 214, 199, 0.26);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.78);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: var(--text-mid);
+  font-size: calc(10 * var(--hud-u));
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.context-hint:empty,
+.interact-prompt:empty,
+#interact-prompt:empty,
+#revive-prompt:empty {
+  display: none;
+}
+
+.context-hint .keycap,
+.interact-prompt .keycap {
+  min-width: calc(20 * var(--hud-u));
+  height: calc(18 * var(--hud-u));
+  font-size: calc(8 * var(--hud-u));
+  color: var(--c-teal-300);
+  border-color: var(--line-accent);
+}
+
+/* 救援进度环 */
+.revive-prompt,
+#revive-prompt {
+  border-color: var(--line-amber);
+  color: var(--c-amber-300);
+  background: rgba(38, 26, 6, 0.8);
+}
+
+.revive-prompt > i,
+#revive-prompt > i {
+  display: block;
+  width: calc(38 * var(--hud-u));
+  height: 3px;
+  background: rgba(245, 180, 69, 0.24);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.revive-prompt > i::after,
+#revive-prompt > i::after {
+  content: "";
+  display: block;
+  width: var(--revive, 0%);
+  height: 100%;
+  background: var(--c-amber-500);
+  transition: width 100ms linear;
+}
+
+/* 受击方向文本（部分 UI 用文字箭头） */
+.hit-dir-text {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 5;
+  color: var(--c-red-400);
+  font-family: var(--font-mono);
+  font-size: calc(16 * var(--hud-u));
+  pointer-events: none;
+  transform-origin: 50% 50%;
+  animation: damageFlash 800ms var(--ease-out) forwards;
+}
+
+/* ==========================================================================
+   26 · HUD · 触屏控制（摇杆 / 动作按钮 / 战术按钮）
+   --------------------------------------------------------------------------
+   #touch-controls 内含 #move-stick / #aim-stick；uiux 会给它加 .left-handed。
+   所有按钮最小 44px 点击区（在 640×360 缩放下用 --hud-u 放大到 44css 以上）。
+   ========================================================================== */
+#touch-controls,
+.touch-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+#touch-controls > * {
+  pointer-events: auto;
+}
+
+.joystick {
+  position: absolute;
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(14 * var(--hud-u)));
+  display: grid;
+  place-items: center;
+  width: calc(112 * var(--hud-u));
+  height: calc(112 * var(--hud-u));
+  min-width: 96px;
+  min-height: 96px;
+  border-radius: 50%;
+  border: 1px solid rgba(151, 214, 199, 0.22);
+  background:
+    radial-gradient(closest-side, rgba(111, 224, 200, 0.07), rgba(3, 12, 13, 0.3) 70%, transparent 72%);
+  box-shadow: 0 0 0 1px rgba(3, 11, 12, 0.4) inset, 0 16px 40px -30px rgba(0, 0, 0, 1);
+  touch-action: none;
+  transition: border-color var(--dur-2), background-color var(--dur-2), opacity var(--dur-2);
+}
+
+.joystick::before {
+  content: "";
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  border: 1px dashed rgba(151, 214, 199, 0.14);
+  pointer-events: none;
+}
+
+.joystick::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: rgba(111, 224, 200, 0.5);
+  pointer-events: none;
+}
+
+#move-stick,
+.move-stick {
+  left: calc(var(--safe-l) + var(--hud-pad) + calc(10 * var(--hud-u)));
+}
+
+#aim-stick,
+.aim-stick {
+  right: calc(var(--safe-r) + var(--hud-pad) + calc(232 * var(--hud-u)));
+  border-color: rgba(245, 180, 69, 0.26);
+  background:
+    radial-gradient(closest-side, rgba(245, 180, 69, 0.08), rgba(3, 12, 13, 0.3) 70%, transparent 72%);
+}
+
+#aim-stick::before {
+  border-color: rgba(245, 180, 69, 0.16);
+}
+
+#aim-stick::after {
+  background: rgba(245, 180, 69, 0.6);
+}
+
+.joystick.active,
+.joystick.held {
+  border-color: var(--line-accent);
+  background-color: rgba(20, 58, 55, 0.32);
+}
+
+#aim-stick.active {
+  border-color: var(--line-amber);
+}
+
+/* 摇杆头 */
+.joystick .stick,
+.joystick > span:not(.label):not(small),
+.joystick .thumb {
+  position: relative;
+  z-index: 2;
+  width: calc(46 * var(--hud-u));
+  height: calc(46 * var(--hud-u));
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(151, 214, 199, 0.42);
+  background:
+    radial-gradient(closest-side, rgba(111, 224, 200, 0.32), rgba(9, 28, 28, 0.9) 76%);
+  box-shadow: 0 6px 18px -10px rgba(0, 0, 0, 1), 0 0 0 4px rgba(111, 224, 200, 0.05);
+  color: var(--c-teal-300);
+  font-size: calc(16 * var(--hud-u));
+  line-height: 1;
+  transform: translate(0, 0);
+  will-change: transform;
+  pointer-events: none;
+}
+
+#aim-stick .stick,
+#aim-stick > span {
+  border-color: rgba(245, 180, 69, 0.46);
+  background: radial-gradient(closest-side, rgba(245, 180, 69, 0.3), rgba(28, 20, 8, 0.9) 76%);
+  color: var(--c-amber-300);
+}
+
+.joystick > small,
+.joystick .label {
+  position: absolute;
+  bottom: calc(8 * var(--hud-u));
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(195, 214, 207, 0.44);
+  font-size: calc(7 * var(--hud-u));
+  letter-spacing: 0.18em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 动作按钮组 */
+#action-buttons,
+.action-buttons {
+  position: absolute;
+  right: calc(var(--safe-r) + var(--hud-pad) + calc(6 * var(--hud-u)));
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(112 * var(--hud-u)));
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: calc(7 * var(--hud-u));
+  pointer-events: none;
+}
+
+#action-buttons > *,
+.action-buttons > * {
+  pointer-events: auto;
+}
+
+/* 主触控按钮 */
+.touch-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  gap: 1px;
+  width: calc(54 * var(--hud-u));
+  height: calc(54 * var(--hud-u));
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid rgba(151, 214, 199, 0.24);
+  border-radius: 50%;
+  background:
+    radial-gradient(closest-side, rgba(9, 30, 30, 0.94), rgba(4, 15, 16, 0.78));
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: var(--text-mid);
+  line-height: 1;
+  box-shadow: 0 10px 26px -20px rgba(0, 0, 0, 1), 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+  touch-action: none;
+  transition:
+    transform 90ms var(--ease-out),
+    border-color var(--dur-2),
+    background-color var(--dur-2),
+    color var(--dur-2);
+}
+
+.touch-btn svg {
+  width: calc(21 * var(--hud-u));
+  height: calc(21 * var(--hud-u));
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.touch-btn small {
+  position: absolute;
+  bottom: calc(6 * var(--hud-u));
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(195, 214, 207, 0.55);
+  font-size: calc(7 * var(--hud-u));
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.touch-btn .count,
+.touch-btn > b,
+.touch-btn > .count {
+  position: absolute;
+  top: calc(3 * var(--hud-u));
+  right: calc(6 * var(--hud-u));
+  color: var(--c-amber-400);
+  font-family: var(--font-mono);
+  font-size: calc(9 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.touch-btn:hover {
+  color: var(--text-hi);
+  border-color: var(--line-accent);
+}
+
+.touch-btn:active,
+.touch-btn.pressed {
+  transform: scale(0.92);
+  border-color: var(--c-teal-400);
+  background-color: rgba(111, 224, 200, 0.2);
+  color: var(--c-teal-200);
+}
+
+.touch-btn.active,
+.touch-btn[aria-pressed="true"] {
+  border-color: var(--line-accent);
+  background-color: rgba(111, 224, 200, 0.18);
+  color: var(--c-teal-200);
+  box-shadow: 0 0 20px -8px rgba(111, 224, 200, 0.9);
+}
+
+.touch-btn.disabled,
+.touch-btn:disabled {
+  opacity: 0.34;
+  pointer-events: none;
+}
+
+.touch-btn.danger {
+  border-color: var(--line-danger);
+  color: #ffd9d6;
+}
+
+.touch-btn.amber {
+  border-color: var(--line-amber);
+  color: var(--c-amber-300);
+}
+
+.touch-btn.sm {
+  width: calc(44 * var(--hud-u));
+  height: calc(44 * var(--hud-u));
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.touch-btn.lg {
+  width: calc(66 * var(--hud-u));
+  height: calc(66 * var(--hud-u));
+}
+
+/* 主行动（开火 / 换弹）更大更醒目 */
+#reload-action,
+#heal-action,
+#interact-action,
+#throw-action,
+#dodge-action,
+#sprint-action,
+#crouch-action,
+#ping-action,
+#backpack-action {
+  position: relative;
+}
+
+#reload-action,
+#heal-action {
+  border-color: rgba(111, 224, 200, 0.3);
+}
+
+#interact-action {
+  border-color: rgba(245, 180, 69, 0.4);
+  color: var(--c-amber-300);
+}
+
+#interact-action.hidden {
+  display: none !important;
+}
+
+/* 战术按钮（手雷 / 烟雾 / 标记） */
+#tactical-buttons,
+.tactical-buttons {
+  position: absolute;
+  left: calc(var(--safe-l) + var(--hud-pad) + calc(10 * var(--hud-u)));
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(132 * var(--hud-u)));
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--hud-u));
+  pointer-events: none;
+}
+
+#tactical-buttons > *,
+.tactical-buttons > * {
+  pointer-events: auto;
+}
+
+.tactical-buttons button,
+#tactical-buttons button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 48px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid rgba(151, 214, 199, 0.2);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.62);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--text-mid);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.06em;
+}
+
+.tactical-buttons button small,
+#tactical-buttons button small {
+  color: var(--c-amber-400);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+}
+
+.tactical-buttons button:hover {
+  border-color: var(--line-accent);
+  color: var(--text-hi);
+}
+
+/* 左手模式（#touch-controls.left-handed） */
+#touch-controls.left-handed #move-stick {
+  left: auto;
+  right: calc(var(--safe-r) + var(--hud-pad) + calc(10 * var(--hud-u)));
+}
+
+#touch-controls.left-handed #aim-stick {
+  right: auto;
+  left: calc(var(--safe-l) + var(--hud-pad) + calc(232 * var(--hud-u)));
+}
+
+#touch-controls.left-handed #action-buttons,
+#touch-controls.left-handed .action-buttons {
+  right: auto;
+  left: calc(var(--safe-l) + var(--hud-pad) + calc(6 * var(--hud-u)));
+}
+
+#touch-controls.left-handed #tactical-buttons,
+#touch-controls.left-handed .tactical-buttons {
+  left: auto;
+  right: calc(var(--safe-r) + var(--hud-pad) + calc(10 * var(--hud-u)));
+}
+
+/* 自动开火 / 瞄准辅助指示 */
+.auto-fire-indicator {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(70 * var(--hud-u)));
+  transform: translateX(-50%);
+  padding: 3px 10px;
+  border: 1px solid var(--line-amber);
+  border-radius: var(--radius-pill);
+  background: rgba(38, 26, 6, 0.7);
+  color: var(--c-amber-300);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   27 · HUD · 聊天 / 记分板 / 波次 / 观战 / 计时
+   ========================================================================== */
+#chat-panel,
+.chat-panel {
+  position: absolute;
+  left: calc(var(--safe-l) + var(--hud-pad));
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(174 * var(--hud-u)));
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(38vw, 320px);
+  max-height: 30vh;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chat-line,
+#chat-panel > div {
+  padding: 3px 8px;
+  border-left: 2px solid rgba(111, 224, 200, 0.4);
+  border-radius: 2px;
+  background: rgba(4, 15, 16, 0.5);
+  color: var(--text-lo);
+  font-size: calc(9 * var(--hud-u));
+  line-height: 1.4;
+  word-break: break-word;
+  animation: chatIn 200ms var(--ease-out) both;
+}
+
+.chat-line b,
+#chat-panel b,
+.chat-line .from {
+  color: var(--c-teal-300);
+  font-weight: 700;
+}
+
+.chat-line.team {
+  border-left-color: var(--c-teal-400);
+}
+
+.chat-line.all,
+.chat-line.global {
+  border-left-color: var(--c-amber-500);
+}
+
+.chat-line.all b {
+  color: var(--c-amber-400);
+}
+
+.chat-input,
+#chat-input {
+  pointer-events: auto;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--hud-radius);
+  background: rgba(4, 15, 16, 0.9);
+  color: var(--text-hi);
+  font-size: calc(10 * var(--hud-u));
+  user-select: text;
+  touch-action: auto;
+}
+
+/* 记分板（Tab） */
+#scoreboard,
+.scoreboard {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 82vw);
+  max-height: 74vh;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: rgba(5, 18, 19, 0.94);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  backdrop-filter: var(--glass-blur-strong);
+  box-shadow: 0 40px 90px -50px rgba(0, 0, 0, 1);
+  overflow: hidden;
+  pointer-events: auto;
+  animation: modalPop 220ms var(--ease-out) both;
+}
+
+#scoreboard.hidden,
+.scoreboard.hidden {
+  display: none !important;
+}
+
+.scoreboard-head,
+#scoreboard > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-hi);
+  font-size: calc(10 * var(--hud-u));
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.scoreboard-body,
+#scoreboard > div {
+  overflow-y: auto;
+  padding: 8px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scoreboard-row,
+.scoreboard .row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 48px 56px 64px;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 2px;
+  color: var(--text-lo);
+  font-size: calc(9 * var(--hud-u));
+  font-variant-numeric: tabular-nums;
+}
+
+.scoreboard-row:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.scoreboard-row.me,
+.scoreboard .me {
+  background: rgba(111, 224, 200, 0.12);
+  color: var(--text-hi);
+  box-shadow: 0 0 0 1px rgba(111, 224, 200, 0.22) inset;
+}
+
+.scoreboard-row.team-head,
+.scoreboard .team-head {
+  color: var(--c-teal-300);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(111, 224, 200, 0.06);
+}
+
+.scoreboard-row b {
+  color: var(--text-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scoreboard-row.dead {
+  opacity: 0.45;
+}
+
+/* 波次 / PvE 面板 */
+#horde-panel,
+.horde-panel {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-t) + var(--hud-pad));
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--hud-u));
+  transform: translateX(-50%);
+  padding: calc(5 * var(--hud-u)) calc(14 * var(--hud-u));
+  border: 1px solid rgba(255, 92, 92, 0.3);
+  border-radius: var(--hud-radius);
+  background: rgba(30, 8, 10, 0.6);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: #ffd0cd;
+  font-size: calc(9 * var(--hud-u));
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+#horde-panel b,
+.horde-panel b {
+  color: var(--c-red-400);
+  font-family: var(--font-mono);
+  font-size: calc(12 * var(--hud-u));
+}
+
+#horde-panel .progress,
+.horde-panel .progress {
+  width: calc(90 * var(--hud-u));
+  height: 3px;
+}
+
+/* 观战条 */
+.spectate-bar,
+#spectate-bar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(64 * var(--hud-u)));
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--hud-u));
+  transform: translateX(-50%);
+  padding: calc(6 * var(--hud-u)) calc(16 * var(--hud-u));
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: rgba(4, 15, 16, 0.8);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: var(--text-mid);
+  font-size: calc(9 * var(--hud-u));
+  letter-spacing: 0.1em;
+  pointer-events: auto;
+}
+
+.spectate-bar b {
+  color: var(--text-hi);
+}
+
+/* 观战可点击按钮（下一个目标） */
+.spectate-bar .btn,
+.spectate-bar button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: calc(8 * var(--hud-u));
+}
+
+/* 载具 / 交互状态条（部分 UI 用） */
+.vehicle-panel {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(120 * var(--hud-u)));
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  color: var(--text-lo);
+  font-family: var(--font-mono);
+  font-size: calc(9 * var(--hud-u));
+  pointer-events: none;
+}
+
+.vehicle-panel .progress {
+  width: calc(120 * var(--hud-u));
+  height: 4px;
+}
+
+/* 屏幕中央大字（倒计时 / 部署 / 胜利） */
+.hud-announce,
+.announce {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  z-index: 7;
+  transform: translate(-50%, -50%);
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-size: clamp(28px, 4.4vw, 64px);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-shadow: 0 0 46px rgba(111, 224, 200, 0.4);
+  pointer-events: none;
+}
+
+.hud-announce small,
+.announce small {
+  display: block;
+  margin-top: 6px;
+  color: var(--c-teal-400);
+  font-family: var(--font-sans);
+  font-size: clamp(10px, 1.1vw, 13px);
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+
+/* ==========================================================================
+   28 · MOTION · KEYFRAMES（只用 transform / opacity / filter）
+   ========================================================================== */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fadeDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes modalPop {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes bootFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes progressStripes {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 0 0, 24px 0; }
+}
+
+@keyframes healthPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+
+@keyframes hitFlash {
+  0% { opacity: 0; transform: scale(1.6); }
+  22% { opacity: 1; transform: scale(0.92); }
+  100% { opacity: 0; transform: scale(1.15); }
+}
+
+@keyframes damageFlash {
+  0% { opacity: 0.95; }
+  100% { opacity: 0; }
+}
+
+@keyframes vignettePulse {
+  0% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+
+@keyframes flashBang {
+  0% { opacity: 0.95; }
+  40% { opacity: 0.75; }
+  100% { opacity: 0; }
+}
+
+@keyframes killfeedIn {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes killfeedOut {
+  to { opacity: 0; transform: translateX(10px); }
+}
+
+@keyframes killBanner {
+  0% { opacity: 0; transform: translate(-50%, 6px) scale(0.94); }
+  18% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  78% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -4px); }
+}
+
+@keyframes phaseIn {
+  from { opacity: 0; transform: translate(-50%, -6px); letter-spacing: 0.4em; }
+  to { opacity: 1; transform: translate(-50%, 0); letter-spacing: 0.26em; }
+}
+
+@keyframes chatIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes raritySheen {
+  0%, 55% { opacity: 0; background-position: 140% 0; }
+  62% { opacity: 0.9; }
+  88% { opacity: 0.55; background-position: -80% 0; }
+  100% { opacity: 0; background-position: -80% 0; }
+}
+
+@keyframes taskFlash {
+  0% { box-shadow: 0 0 0 0 rgba(245, 180, 69, 0.55); }
+  70% { box-shadow: 0 0 0 10px rgba(245, 180, 69, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 180, 69, 0); }
+}
+
+@keyframes numRoll {
+  from { opacity: 0; transform: translateY(0.4em); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@keyframes scanline {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(100%); }
+}
+
+/* ==========================================================================
+   29 · MOTION · APPLIED（stagger / 数字滚动 / 任务闪光）
+   ========================================================================== */
+.screen.active .screen-head,
+.screen.active .screen-body > *,
+.screen.active .screen-main > * {
+  animation: fadeUp var(--dur-4) var(--ease-out) both;
+}
+
+/* 卡片进入 stagger（最多 12 个，避免同时播放过多动画） */
+.screen.active .card:nth-child(1),
+.screen.active .codex-card:nth-child(1),
+.screen.active .ach-card:nth-child(1),
+.screen.active .mode-pick:nth-child(1),
+.screen.active .map-pick:nth-child(1) { animation-delay: 40ms; }
+
+.screen.active .card:nth-child(2),
+.screen.active .codex-card:nth-child(2),
+.screen.active .ach-card:nth-child(2),
+.screen.active .mode-pick:nth-child(2),
+.screen.active .map-pick:nth-child(2) { animation-delay: 80ms; }
+
+.screen.active .card:nth-child(3),
+.screen.active .codex-card:nth-child(3),
+.screen.active .ach-card:nth-child(3),
+.screen.active .mode-pick:nth-child(3),
+.screen.active .map-pick:nth-child(3) { animation-delay: 120ms; }
+
+.screen.active .card:nth-child(4),
+.screen.active .codex-card:nth-child(4),
+.screen.active .ach-card:nth-child(4),
+.screen.active .mode-pick:nth-child(4),
+.screen.active .map-pick:nth-child(4) { animation-delay: 160ms; }
+
+.screen.active .card:nth-child(n + 5),
+.screen.active .codex-card:nth-child(n + 5),
+.screen.active .ach-card:nth-child(n + 5) { animation-delay: 200ms; }
+
+.screen.active .card,
+.screen.active .codex-card,
+.screen.active .skin-card,
+.screen.active .mission,
+.screen.active .ach-card {
+  animation: fadeUp var(--dur-4) var(--ease-out) both;
+}
+
+/* 数字变化：由 JS 加 .bump 类短暂强化（不重排） */
+.bump {
+  animation: numRoll 220ms var(--ease-out);
+}
+
+/* 任务完成 / 领奖闪光 */
+.mission.claimable,
+.badge-corner.amber,
+.task-done {
+  position: relative;
+}
+
+.task-flash,
+.mission.flash {
+  animation: taskFlash 900ms var(--ease-out) 1;
+}
+
+/* 加载圈（含动态 SVG 场景的备用态） */
+.spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid rgba(111, 224, 200, 0.18);
+  border-top-color: var(--c-teal-400);
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+
+.spinner.sm {
+  width: 16px;
+  height: 16px;
+  border-width: 1.5px;
+}
+
+/* 进度未知的流光条 */
+.indeterminate > i {
+  width: 38% !important;
+  animation: indet 1.4s var(--ease-in-out) infinite;
+}
+
+@keyframes indet {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+/* 扫描线装饰（用于加载/连接覆盖层） */
+.scanline {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.scanline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 30%;
+  background: linear-gradient(180deg, transparent, rgba(111, 224, 200, 0.07), transparent);
+  animation: scanline 5s linear infinite;
+}
+
+/* 正在播放动画的稀有度卡默认只在 hover 播放流光，控制并发 */
+.card.rarity-legendary::before,
+.card.rarity-epic::before,
+.codex-card.rarity-legendary::before,
+.codex-card.rarity-epic::before,
+.skin-card.rarity-legendary::before,
+.skin-card.rarity-epic::before,
+.slot.rarity-legendary::before,
+.slot.rarity-epic::before,
+.ach-card.rarity-legendary::before,
+.ach-card.rarity-epic::before {
+  animation-play-state: paused;
+}
+
+.card.rarity-legendary:hover::before,
+.card.rarity-epic:hover::before,
+.codex-card.rarity-legendary:hover::before,
+.codex-card.rarity-epic:hover::before,
+.skin-card.rarity-legendary:hover::before,
+.skin-card.rarity-epic:hover::before,
+.rarity-legendary.selected::before,
+.rarity-epic.selected::before,
+.item-hero::before {
+  animation-play-state: running;
+}
+
+/* 单页里最多同时点亮 2 个流光（列表首个 + hover），其余保持暂停 */
+@media (prefers-reduced-motion: no-preference) {
+  .store-grid > .rarity-legendary:nth-child(1)::before,
+  .codex-grid > .rarity-legendary:nth-child(1)::before {
+    animation-play-state: running;
+  }
+}
+
+/* ==========================================================================
+   30 · RESPONSIVE · 通用断点
+   --------------------------------------------------------------------------
+   设计基准：1440×900 桌面 / 1280×720 平板 / 640×360 手机横屏（最小可玩）。
+   所有 HUD 尺寸走 --hud-u（短边 /720，夹在 0.82–1.6）。
+   ========================================================================== */
+
+/* ---- 超宽 / 2K ---- */
+@media (min-width: 1800px) {
+  .screen-body {
+    padding: 32px max(48px, calc(var(--safe-r) + 48px)) 28px max(48px, calc(var(--safe-l) + 48px));
+  }
+
+  .screen-main {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  }
+
+  .home-hero {
+    max-width: min(880px, 58vw);
+  }
+}
+
+/* ---- 笔记本 / 小桌面 ---- */
+@media (max-width: 1180px) {
+  .screen-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .screen-side,
+  .play-side,
+  .loadout-side {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    align-items: start;
+  }
+
+  .home-nav {
+    grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+    max-width: none;
+  }
+
+  .topbar {
+    gap: var(--sp-4);
+  }
+
+  .nav-button {
+    padding: 0 var(--sp-3);
+  }
+}
+
+/* ---- 平板 ---- */
+@media (max-width: 900px) {
+  .topbar {
+    min-height: 62px;
+    gap: var(--sp-3);
+    padding-top: calc(var(--safe-t) + 8px);
+    padding-bottom: 8px;
+  }
+
+  .brand .brand-sub,
+  .brand small {
+    display: none;
+  }
+
+  .build-label {
+    display: none;
+  }
+
+  .screen-body {
+    gap: var(--sp-4);
+    padding: var(--sp-4) max(var(--sp-4), calc(var(--safe-r) + 16px)) var(--sp-4)
+      max(var(--sp-4), calc(var(--safe-l) + 16px));
+  }
+
+  .home-hero {
+    max-width: none;
+    padding-top: var(--sp-4);
+  }
+
+  .title-xl {
+    font-size: clamp(32px, 6vw, 52px);
+  }
+
+  .screen-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .map-row {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .squad-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .grid-3,
+  .grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modal-card {
+    width: min(620px, 100%);
+  }
+
+  .modal-body {
+    padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  }
+
+  .modal-head {
+    padding: var(--sp-4) var(--sp-5) var(--sp-2) var(--sp-4);
+  }
+
+  .modal-actions {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+}
+
+/* ---- 手机横屏（640×360 起必须可玩） ---- */
+@media (max-width: 760px), (max-height: 460px) {
+  html,
+  body {
+    font-size: 13px;
+  }
+
+  .topbar {
+    min-height: 52px;
+    gap: var(--sp-2);
+    padding: calc(var(--safe-t) + 6px) max(var(--sp-3), calc(var(--safe-r) + 12px)) 6px
+      max(var(--sp-3), calc(var(--safe-l) + 12px));
+  }
+
+  .brand img,
+  .brand svg,
+  .brand .brand-mark {
+    width: 26px;
+    height: 26px;
+  }
+
+  .brand .brand-title {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.16em;
+  }
+
+  .nav-button {
+    min-height: 40px;
+    padding: 0 10px;
+    font-size: var(--fs-2xs);
+  }
+
+  .nav-button span:not(.badge) {
+    display: none;
+  }
+
+  .top-actions {
+    gap: 6px;
+  }
+
+  .currency {
+    height: 28px;
+    padding: 0 7px;
+    font-size: var(--fs-2xs);
+  }
+
+  .currency small {
+    display: none;
+  }
+
+  .icon-btn,
+  .icon-button {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+  }
+
+  .screen-body {
+    gap: var(--sp-3);
+    padding: var(--sp-3) max(var(--sp-3), calc(var(--safe-r) + 12px)) var(--sp-3)
+      max(var(--sp-3), calc(var(--safe-l) + 12px));
+  }
+
+  .screen-head {
+    gap: var(--sp-2);
+  }
+
+  .title-xl {
+    font-size: clamp(26px, 7vw, 40px);
+  }
+
+  .tagline {
+    font-size: 13px;
+  }
+
+  .home-hero p:not(.tagline) {
+    display: none;
+  }
+
+  .home-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 0;
+  }
+
+  .home-nav-item {
+    min-height: 46px;
+    padding: 8px 10px;
+  }
+
+  .home-nav-item b {
+    font-size: var(--fs-2xs);
+  }
+
+  .home-nav-item small {
+    display: none;
+  }
+
+  .home-nav-item .arrow {
+    font-size: var(--fs-xs);
+  }
+
+  .mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .mode-pick {
+    min-height: 108px;
+    padding: 10px;
+  }
+
+  .mode-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .mode-icon svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .mode-name {
+    font-size: var(--fs-sm);
+  }
+
+  .mode-desc {
+    display: none;
+  }
+
+  .map-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .map-art {
+    height: 62px;
+  }
+
+  .map-pick {
+    min-height: 0;
+  }
+
+  .map-desc,
+  .map-diff {
+    display: none;
+  }
+
+  .map-name {
+    padding: 0 8px;
+    font-size: var(--fs-xs);
+  }
+
+  .map-sub {
+    padding: 0 8px;
+    font-size: 8px;
+  }
+
+  .play-actions {
+    gap: var(--sp-2);
+    margin-top: 0;
+  }
+
+  .play-actions .btn {
+    flex: 1 1 140px;
+    min-width: 0;
+    min-height: 46px;
+  }
+
+  .btn {
+    padding: 0 var(--sp-4);
+    font-size: var(--fs-sm);
+  }
+
+  .btn-lg {
+    min-height: 48px;
+    padding: 0 var(--sp-5);
+  }
+
+  .card {
+    padding: var(--sp-3);
+  }
+
+  .store-grid,
+  .codex-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px;
+  }
+
+  .store-grid .card {
+    min-height: 168px;
+  }
+
+  .item-art {
+    min-height: 68px;
+  }
+
+  .item-art svg {
+    width: 38px;
+    height: 38px;
+  }
+
+  .modal-card {
+    width: 100%;
+    max-height: 100%;
+    border-radius: var(--radius-md);
+  }
+
+  .modal-head {
+    padding: var(--sp-3) var(--sp-4) var(--sp-2);
+    padding-right: 48px;
+  }
+
+  .modal-head h2 {
+    font-size: var(--fs-lg);
+  }
+
+  .modal-hint,
+  .modal-head p {
+    font-size: var(--fs-2xs);
+  }
+
+  .modal-body {
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-4) var(--sp-3);
+  }
+
+  .modal-actions {
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  }
+
+  .modal-actions .btn {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+
+  .modal-close {
+    width: 40px;
+    height: 40px;
+    top: 2px;
+    right: 2px;
+  }
+
+  .grid-2,
+  .grid-3,
+  .grid-4,
+  .mode-fields,
+  .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+  }
+
+  .setting-row {
+    min-height: 44px;
+    padding: var(--sp-2) 0;
+  }
+
+  .help-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .help-grid article {
+    padding: var(--sp-3);
+  }
+
+  .rank-display {
+    font-size: 56px;
+  }
+
+  .result-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .result-stats > div {
+    padding: 6px 4px;
+  }
+
+  .result-stats b {
+    font-size: var(--fs-lg);
+  }
+
+  .screen-foot {
+    min-height: 28px;
+    font-size: 9px;
+  }
+
+  .home-foot {
+    gap: var(--sp-2);
+    font-size: 9px;
+  }
+
+  #dialog-root .modal {
+    padding: max(6px, var(--safe-t)) max(8px, var(--safe-r)) max(6px, var(--safe-b)) max(8px, var(--safe-l));
+  }
+
+  #toast-root {
+    bottom: calc(16vh + var(--safe-b));
+    width: min(92vw, 380px);
+  }
+
+  .toast,
+  #toast {
+    padding: 7px 12px;
+    font-size: var(--fs-2xs);
+  }
+}
+
+/* ---- 极矮屏（横屏 360 高或更小）：进一步压缩 ---- */
+@media (max-height: 400px) {
+  .home-hero {
+    padding-top: var(--sp-2);
+  }
+
+  .home-hero .title-xl {
+    font-size: clamp(24px, 6vw, 34px);
+  }
+
+  .home-nav-item {
+    min-height: 40px;
+  }
+
+  .mode-pick {
+    min-height: 96px;
+  }
+
+  .map-art {
+    height: 52px;
+  }
+
+  .screen-foot {
+    display: none;
+  }
+
+  .card {
+    gap: var(--sp-2);
+  }
+}
+
+/* ==========================================================================
+   31 · RESPONSIVE · HUD（手机横屏 / 平板 / 桌面）
+   ========================================================================== */
+
+/* ---- 桌面：隐藏触屏控件，显示键位提示 ---- */
+@media (pointer: fine) and (min-width: 768px) {
+  #touch-controls,
+  .touch-controls,
+  #action-buttons,
+  .action-buttons,
+  #tactical-buttons,
+  .tactical-buttons {
+    display: none !important;
+  }
+
+  .desktop-controls {
+    display: block;
+  }
+
+  .crosshair::before,
+  .crosshair::after {
+    background: rgba(233, 251, 244, 0.88);
+  }
+
+  /* 桌面：左键点击的 hover 反馈 */
+  .hud-panel:hover {
+    border-color: rgba(151, 214, 199, 0.3);
+  }
+}
+
+/* ---- 触屏：显示触控按钮，隐藏桌面提示 ---- */
+@media (pointer: coarse) {
+  .desktop-controls,
+  .keyboard-only {
+    display: none !important;
+  }
+
+  #touch-controls {
+    display: block;
+  }
+
+  #action-buttons {
+    display: flex;
+  }
+
+  #tactical-buttons {
+    display: flex;
+  }
+
+  /* 触屏隐藏准星（由右摇杆瞄准），但保留命中标记 */
+  #crosshair,
+  .crosshair {
+    opacity: 0.5;
+    transform: scale(0.86);
+  }
+
+  #hud .hud-top {
+    top: calc(var(--safe-t) + 6px);
+  }
+
+  #squad-panel {
+    top: calc(var(--safe-t) + 40px);
+  }
+
+  #killfeed {
+    top: calc(var(--safe-t) + 34px);
+  }
+
+  /* 触屏上 HUD 面板略缩，给摇杆留空间 */
+  #health-panel {
+    width: calc(188 * var(--hud-u));
+  }
+
+  .weapon-panel {
+    min-width: calc(140 * var(--hud-u));
+  }
+
+  /* 触屏取消 hover 位移，避免误触后卡住 */
+  .card.interactive:hover,
+  button.card:hover,
+  .home-nav-item:hover,
+  .mode-pick:hover,
+  .map-pick:hover,
+  .btn:hover {
+    transform: none;
+  }
+}
+
+/* ---- 手机横屏（按高度判定，横屏手机通常 ≤ 500px 高） ----
+   布局分区：
+   左上 小队板 | 上中 状态条 | 右上 小地图
+   左下 移动摇杆 + 上方生命板 | 右下 动作按钮簇 + 左上瞄准摇杆
+   ------------------------------------------------------------------ */
+@media (max-height: 500px) and (orientation: landscape) {
+  #hud {
+    --hud-u: clamp(0.9px, calc(100vmin / 400), 1.1px);
+    --hud-pad: calc(7 * var(--hud-u));
+    --hud-gap: calc(5 * var(--hud-u));
+  }
+
+  .minimap-wrap canvas,
+  #minimap {
+    width: calc(88 * var(--hud-u));
+    height: calc(88 * var(--hud-u));
+  }
+
+  .map-weather {
+    display: none;
+  }
+
+  #squad-panel {
+    width: calc(126 * var(--hud-u));
+    padding: calc(4 * var(--hud-u));
+    gap: calc(2 * var(--hud-u));
+  }
+
+  .squad-heading {
+    font-size: calc(8 * var(--hud-u));
+    padding-bottom: calc(3 * var(--hud-u));
+  }
+
+  .squad-member {
+    min-height: calc(16 * var(--hud-u));
+    font-size: calc(8 * var(--hud-u));
+    padding: 1px calc(4 * var(--hud-u));
+  }
+
+  .squad-member small {
+    font-size: calc(7 * var(--hud-u));
+  }
+
+  /* 生命板：左下，位于摇杆上方 */
+  #health-panel,
+  .health-panel {
+    width: calc(150 * var(--hud-u));
+    padding: calc(5 * var(--hud-u)) calc(7 * var(--hud-u));
+    gap: calc(3 * var(--hud-u));
+    bottom: calc(var(--safe-b) + var(--hud-pad) + calc(100 * var(--hud-u)));
+  }
+
+  .health-panel .player-line b,
+  .player-line b {
+    font-size: calc(9 * var(--hud-u));
+  }
+
+  .player-line span,
+  #health-value {
+    font-size: calc(14 * var(--hud-u));
+  }
+
+  .health-track {
+    height: calc(5 * var(--hud-u));
+    min-height: 4px;
+  }
+
+  .armor-track,
+  .stamina-track {
+    height: calc(3 * var(--hud-u));
+    min-height: 2px;
+  }
+
+  .health-panel > small,
+  .health-panel #player-state {
+    font-size: calc(7 * var(--hud-u));
+  }
+
+  #consumables .touch-btn,
+  .consumable {
+    width: calc(26 * var(--hud-u));
+    height: calc(26 * var(--hud-u));
+  }
+
+  /* 战术按钮：移到生命板上方，横排 */
+  #tactical-buttons,
+  .tactical-buttons {
+    left: calc(var(--safe-l) + var(--hud-pad));
+    bottom: calc(var(--safe-b) + var(--hud-pad) + calc(190 * var(--hud-u)));
+    flex-direction: row;
+    gap: calc(4 * var(--hud-u));
+  }
+
+  .tactical-buttons button,
+  #tactical-buttons button {
+    min-width: 40px;
+    min-height: 26px;
+    padding: 2px 7px;
+    font-size: calc(8 * var(--hud-u));
+  }
+
+  /* 武器板：右下，动作簇上方 */
+  .weapon-panel,
+  #weapon-panel {
+    right: calc(var(--safe-r) + var(--hud-pad));
+    bottom: calc(var(--safe-b) + var(--hud-pad) + calc(104 * var(--hud-u)));
+    min-width: calc(116 * var(--hud-u));
+    padding: calc(5 * var(--hud-u)) calc(8 * var(--hud-u));
+  }
+
+  #weapon-name {
+    font-size: calc(8 * var(--hud-u));
+  }
+
+  #ammo {
+    font-size: calc(20 * var(--hud-u));
+  }
+
+  #reserve {
+    font-size: calc(9 * var(--hud-u));
+  }
+
+  #swap-action {
+    min-height: calc(20 * var(--hud-u));
+    font-size: calc(7 * var(--hud-u));
+  }
+
+  /* 触控：移动摇杆左下 / 瞄准摇杆右下偏内 / 动作簇右下角 */
+  .joystick {
+    width: calc(96 * var(--hud-u));
+    height: calc(96 * var(--hud-u));
+    min-width: 78px;
+    min-height: 78px;
+  }
+
+  .joystick .stick {
+    width: calc(38 * var(--hud-u));
+    height: calc(38 * var(--hud-u));
+    min-width: 30px;
+    min-height: 30px;
+  }
+
+  #move-stick {
+    left: calc(var(--safe-l) + var(--hud-pad));
+    bottom: calc(var(--safe-b) + var(--hud-pad));
+  }
+
+  #aim-stick {
+    right: calc(var(--safe-r) + var(--hud-pad) + 38vw);
+    bottom: calc(var(--safe-b) + var(--hud-pad) + calc(4 * var(--hud-u)));
+  }
+
+  #touch-controls.left-handed #move-stick {
+    left: auto;
+    right: calc(var(--safe-r) + var(--hud-pad));
+  }
+
+  #touch-controls.left-handed #aim-stick {
+    right: auto;
+    left: calc(var(--safe-l) + var(--hud-pad) + 38vw);
+  }
+
+  #action-buttons,
+  .action-buttons {
+    right: calc(var(--safe-r) + var(--hud-pad));
+    bottom: calc(var(--safe-b) + var(--hud-pad));
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-content: flex-end;
+    gap: calc(5 * var(--hud-u));
+    max-width: 36vw;
+  }
+
+  .touch-btn {
+    width: calc(46 * var(--hud-u));
+    height: calc(46 * var(--hud-u));
+    min-width: 38px;
+    min-height: 38px;
+  }
+
+  .touch-btn svg {
+    width: calc(18 * var(--hud-u));
+    height: calc(18 * var(--hud-u));
+  }
+
+  .touch-btn small {
+    display: none;
+  }
+
+  .touch-btn .count {
+    top: calc(1 * var(--hud-u));
+    right: calc(4 * var(--hud-u));
+    font-size: calc(8 * var(--hud-u));
+  }
+
+  .joystick > small,
+  .joystick .label {
+    display: none;
+  }
+
+  /* 顶栏 / 播报压缩 */
+  .hud-alive b,
+  .hud-kills b {
+    font-size: calc(13 * var(--hud-u));
+  }
+
+  .zone-pill,
+  .hud-timer,
+  .hud-stage {
+    font-size: calc(8 * var(--hud-u));
+    padding: 2px calc(6 * var(--hud-u));
+  }
+
+  #game-menu,
+  #pause-btn {
+    width: calc(32 * var(--hud-u));
+    height: calc(32 * var(--hud-u));
+  }
+
+  #killfeed {
+    top: calc(var(--safe-t) + var(--hud-pad) + calc(28 * var(--hud-u)));
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 34vw;
+  }
+
+  .killfeed-row,
+  #killfeed > div {
+    padding: 2px 6px;
+    font-size: calc(8 * var(--hud-u));
+  }
+
+  .phase-banner {
+    top: 14%;
+    font-size: calc(10 * var(--hud-u));
+    padding: calc(4 * var(--hud-u)) calc(14 * var(--hud-u));
+  }
+
+  .context-hint,
+  #interact-prompt,
+  #revive-prompt {
+    bottom: 34%;
+    font-size: calc(9 * var(--hud-u));
+    padding: calc(4 * var(--hud-u)) calc(10 * var(--hud-u));
+  }
+
+  .crosshair,
+  #crosshair {
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+  }
+
+  #scoreboard {
+    width: min(92vw, 620px);
+    max-height: 84vh;
+  }
+}
+/* ---- 平板横屏（768–1180 宽） ---- */
+@media (min-width: 761px) and (max-width: 1180px) and (orientation: landscape) {
+  #hud {
+    --hud-u: clamp(0.92px, calc(100vmin / 780), 1.24px);
+  }
+
+  #squad-panel {
+    width: calc(150 * var(--hud-u));
+  }
+
+  .minimap-wrap canvas,
+  #minimap {
+    width: calc(118 * var(--hud-u));
+    height: calc(118 * var(--hud-u));
+  }
+}
+
+/* ---- 竖屏：显示 #rotate-hint ---- */
+@media (orientation: portrait) {
+  #rotate-hint {
+    display: flex;
+  }
+
+  /* 竖屏下把屏幕内容隐藏（HUD 由主循环控制显隐，避免 e2e 侦测到异常状态） */
+  #screen-root,
+  #dialog-root,
+  #toast-root {
+    visibility: hidden;
+  }
+
+  #rotate-hint {
+    visibility: visible;
+    display: flex;
+  }
+
+  #boot {
+    display: none;
+  }
+}
+
+/* 竖屏但高度很小（折叠屏外屏等），仍提示横屏 */
+@media (orientation: portrait) and (min-width: 600px) {
+  #rotate-hint {
+    display: flex;
+  }
+}
+
+/* ---- 减少动态偏好 ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .screen {
+    transform: none;
+  }
+
+  .status-dot,
+  .low-hp-overlay,
+  .health-panel.low .health-track > i,
+  .health-panel.critical .health-track > i {
+    animation: none !important;
+  }
+
+  .rarity-legendary::before,
+  .rarity-epic::before {
+    display: none;
+  }
+}
+
+/* ---- 高对比度偏好 ---- */
+@media (prefers-contrast: more) {
+  :root {
+    --line: rgba(190, 236, 226, 0.3);
+    --line-soft: rgba(190, 236, 226, 0.18);
+    --text-lo: #a9c2ba;
+    --text-dim: #86a49c;
+  }
+
+  .hud-panel,
+  .panel,
+  .card {
+    border-width: 1.5px;
+  }
+}
+
+/* ---- 360 宽的极小屏（横屏 640×360 的设备像素比适配） ---- */
+@media (max-width: 680px) {
+  .nav-button {
+    padding: 0 8px;
+  }
+
+  .top-actions .icon-btn:not(#game-menu),
+  .top-actions .icon-button:not(#game-menu) {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+  }
+
+  .home-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .map-row {
+    gap: 4px;
+  }
+
+  .phase-banner {
+    letter-spacing: 0.16em;
+  }
+}
+
+/* ==========================================================================
+   32 · HUD SAFE-AREA / 边缘安全区微调
+   ========================================================================== */
+#hud .hud-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* 刘海屏横屏时左右两侧的额外留白 */
+@media (orientation: landscape) {
+  #health-panel,
+  #squad-panel {
+    margin-left: var(--safe-l);
+  }
+
+  .weapon-panel,
+  #hud .hud-map {
+    margin-right: var(--safe-r);
+  }
+}
+
+/* ==========================================================================
+   33 · 兼容别名 / 状态工具 / 细节补丁
+   ========================================================================== */
+
+/* 屏幕激活动画（ui-screens 用 display:none → flex 切换，transition 不可靠，
+   这里用 animation 保证每次激活都有淡入 + 位移） */
+.screen.active {
+  animation: screenIn var(--dur-4) var(--ease-out) both;
+}
+
+@keyframes screenIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 右摇杆（.aim / .aim-stick 两种写法） */
+#aim-stick.aim,
+#aim-stick.aim-stick,
+.aim-stick,
+.joystick.aim {
+  border-color: rgba(245, 180, 69, 0.26);
+}
+
+/* 通用小标签 / 键位 / 分隔 */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-lo);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.tag.accent {
+  border-color: var(--line-accent);
+  color: var(--c-teal-300);
+  background: rgba(111, 224, 200, 0.1);
+}
+
+.tag.amber {
+  border-color: var(--line-amber);
+  color: var(--c-amber-400);
+  background: rgba(245, 180, 69, 0.1);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-lo);
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--ls-wide);
+  white-space: nowrap;
+}
+
+.pill.accent {
+  border-color: var(--line-accent);
+  color: var(--c-teal-300);
+}
+
+.hint {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+.hr {
+  height: 1px;
+  margin: var(--sp-3) 0;
+  background: var(--line-soft);
+  border: 0;
+}
+
+/* 卡内加载 / 骨架 */
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(100deg, rgba(151, 214, 199, 0.06) 20%, rgba(151, 214, 199, 0.14) 40%, rgba(151, 214, 199, 0.06) 60%);
+  background-size: 220% 100%;
+  animation: skeletonMove 1.6s var(--ease-in-out) infinite;
+}
+
+@keyframes skeletonMove {
+  from { background-position: 120% 0; }
+  to { background-position: -60% 0; }
+}
+
+.is-loading {
+  position: relative;
+  pointer-events: none;
+}
+
+.is-loading::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid rgba(111, 224, 200, 0.2);
+  border-top-color: var(--c-teal-400);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+/* 页内错误条 */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 10px var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--c-teal-400);
+  border-radius: var(--radius-sm);
+  background: rgba(111, 224, 200, 0.07);
+  color: var(--text-mid);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.banner.warn {
+  border-left-color: var(--c-amber-500);
+  background: rgba(245, 180, 69, 0.08);
+}
+
+.banner.danger {
+  border-left-color: var(--c-red-500);
+  background: rgba(255, 92, 92, 0.08);
+  color: #ffd9d6;
+}
+
+/* 结算 / 图鉴详情的通用块 */
+.detail-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(3, 11, 12, 0.4);
+}
+
+.detail-hero .detail-art {
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: radial-gradient(60% 70% at 50% 45%, rgba(111, 224, 200, 0.18), transparent 72%);
+  color: var(--c-mist-100);
+}
+
+.detail-hero .detail-art svg {
+  width: 58px;
+  height: 58px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.3;
+}
+
+.detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.detail-meta h3 {
+  font-size: var(--fs-lg);
+}
+
+.detail-meta p {
+  color: var(--text-lo);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+}
+
+.detail-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.detail-desc {
+  color: var(--text-lo);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+}
+
+/* 商店 / 图鉴条目别名 */
+.store-item,
+.codex-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* 价格条 / 货币图标（多种写法兜底） */
+.credits,
+.xp-amount {
+  color: var(--c-amber-400);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+
+/* 已装备 / 已拥有 / 已领取状态 */
+.equipped .btn,
+.btn.equipped,
+.card.equipped .btn {
+  color: var(--c-teal-300);
+  border-color: var(--line-accent);
+  pointer-events: none;
+}
+
+.owned::after,
+.equipped::after {
+  content: "";
+}
+
+/* 数量徽标（0 时压暗） */
+.count.zero,
+.count[data-zero="true"] {
+  color: var(--text-ghost) !important;
+}
+
+/* 通用可点击区域补丁：任何 .clickable 元素在触屏上也保持反馈 */
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:active {
+  transform: scale(0.99);
+}
+
+/* 按钮内联加载 */
+.btn.is-loading {
+  color: transparent !important;
+}
+
+/* 焦点可见性（键盘） */
+:focus-visible {
+  outline-offset: 2px;
+}
+
+/* 文本输入在 HUD 上（聊天）允许交互 */
+#hud input,
+#hud textarea,
+#hud [contenteditable="true"] {
+  pointer-events: auto;
+}
+
+/* 禁止系统长按菜单 / 拖拽图片 */
+img,
+svg {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* 高 DPI 下 1px 描边不虚化 */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  .hud-panel,
+  .panel,
+  .card {
+    border-width: 1px;
+  }
+}
+
+/* ==========================================================================
+   34 · PRINT / 兜底（不会出现在游戏里，但防止误导出）
+   ========================================================================== */
+@media print {
+  #world,
+  #hud,
+  #boot,
+  #fx-overlay,
+  #rotate-hint {
+    display: none !important;
+  }
+
+  body {
+    overflow: visible;
+    position: static;
+    color: #000;
+    background: #fff;
+  }
+}
+
+/* ========================================================================== */

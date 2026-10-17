@@ -1,560 +1,1941 @@
-import { MAP, WORLD_RADIUS, randomGenerator, blocked, moveBody, clearLine, wallDistance } from './map.mjs';
-import { TICK_RATE, SQUAD_SIZE, MAX_SQUADS, MAX_PLAYERS, MAX_HUMANS_PER_ROOM, MAX_LOOT, REVIVE_TIME, BLEEDOUT_TIME, WEAPONS } from './rules.mjs';
-export { TICK_RATE, SQUAD_SIZE, MAX_SQUADS, MAX_PLAYERS, MAX_HUMANS_PER_ROOM, REVIVE_TIME, BLEEDOUT_TIME, WEAPONS } from './rules.mjs';
-const BOT_NAMES = ['松鸦', '北斗', '灰狐', '纸飞机', '野渡', '杉木', '海盐', '回声', '浮游', '寒鸦', '拾荒者', '潮汐', '白鹭', '山猫', '微光', '石榴', '长风', '沙棘', '枯木', '星火'];
-const TEAM_NAMES = ['曙光', '黑潮', '雾岚', '赤礁', '白沙', '远星', '山隼', '星火', '长风', '暗礁', '苍穹', '疾雨', '晨鹿', '鲸落', '沙丘', '雪松'];
-const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
-const round = x => Math.round(x * 100) / 100;
-const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
-const teamName = team => TEAM_NAMES[team] || `小队 ${team + 1}`;
-export const emptyInput = () => ({ mx: 0, mz: 0, aim: 0, fire: false, reload: false, heal: false, interact: false, swap: false, grenade: false, smoke: false, ping: false, seq: 0 });
+// 雾岛突围 / MIST ISLE — 对战模拟核心（owner: simcore · shared/simulation.mjs）
+// 服务端权威：命中/伤害/缩圈/载具/波次全部在这里结算，客户端只发输入。
+// 单位：米 / 秒 / 弧度（0 = +Z，x 分量 = sin(angle)）；禁止 Math.random，只用 this.rng()。
+import * as mapgen from './map.mjs';
+import {
+  TICK_RATE, SQUAD_SIZE, MAX_PLAYERS, MAX_HUMANS, MAX_LOOT, MAX_EVENTS, MAX_GRENADES, MAX_CARS,
+  MATCH_MODES, DEFAULT_DURATION, MOVE, COMBAT, ZONE_PHASES, ZONE_FIRST_WAIT, REVIVE_TIME,
+  BLEEDOUT_TIME, REVIVE_HP, REVIVE_RANGE, HORDE, DIFFICULTY, INPUT_DEFAULTS,
+} from './rules.mjs';
+import {
+  WEAPONS, ATTACHMENTS, AMMO_TYPES, WEAPON_ORDER, applyAttachmentMods, getWeapon, damageAtDistance,
+} from './data/weapons.mjs';
+import { ARMORS, CONSUMABLES, THROWABLES, BACKPACKS, armorForTier } from './data/items.mjs';
+import { buildLootForSpot, buildAirdropLoot } from './data/loot.mjs';
+import { getMapDef } from './data/maps.mjs';
+import { thinkBot } from './ai.mjs';
 
-export function sanitizeInput(value) {
-  if (!value || typeof value !== 'object') return emptyInput();
-  const n = key => typeof value[key] === 'number' && Number.isFinite(value[key]) ? value[key] : 0;
-  let mx = clamp(n('mx'), -1, 1), mz = clamp(n('mz'), -1, 1);
-  const length = Math.hypot(mx, mz);
-  if (length > 1) { mx /= length; mz /= length; }
-  return {
-    mx, mz, aim: n('aim') % (Math.PI * 2), fire: value.fire === true,
-    reload: value.reload === true, heal: value.heal === true, interact: value.interact === true,
-    swap: value.swap === true, grenade: value.grenade === true, smoke: value.smoke === true, ping: value.ping === true,
-    seq: clamp(Math.floor(n('seq')), 0, Number.MAX_SAFE_INTEGER),
-  };
+export { WEAPONS, ATTACHMENTS, ARMORS, CONSUMABLES, THROWABLES, BACKPACKS, AMMO_TYPES, WEAPON_ORDER };
+export { TICK_RATE, SQUAD_SIZE, MAX_PLAYERS };
+export const MAX_HUMANS_PER_ROOM = MAX_HUMANS;
+export const MAX_SQUADS = Math.ceil(MAX_PLAYERS / SQUAD_SIZE);
+
+const TAU = Math.PI * 2;
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+const r2 = (v) => Math.round(v * 100) / 100;
+const dist = (ax, az, bx, bz) => Math.hypot(ax - bx, az - bz);
+const wrapAngle = (a) => {
+  let x = a % TAU;
+  if (x > Math.PI) x -= TAU;
+  if (x < -Math.PI) x += TAU;
+  return x;
+};
+const TEAM_NAMES = ['曙光', '黑潮', '雾岚', '赤礁', '白沙', '远星', '山隼', '星火',
+  '长风', '暗礁', '苍穹', '疾雨', '晨鹿', '鲸落', '沙丘', '雪松'];
+const BOT_NAMES = ['松鸦', '北斗', '灰狐', '纸飞机', '野渡', '杉木', '海盐', '回声', '浮游', '寒鸦',
+  '拾荒者', '潮汐', '白鹭', '山猫', '微光', '石榴', '长风', '沙棘', '枯木', '星火'];
+const PING_KINDS = ['move', 'enemy', 'loot', 'danger'];
+const BOOL_INPUTS = ['fire', 'reload', 'heal', 'interact', 'swap', 'ping', 'sprint', 'crouch',
+  'dodge', 'revive', 'ready'];
+const AMMO_KEYS = ['light', 'medium', 'heavy', 'shell', 'bolt'];
+const CARS = {
+  buggy: { id: 'buggy', name: '沙滩越野', seats: 4, speed: 15.5, hp: 220, color: 0xd8a24a },
+  jeep: { id: 'jeep', name: '军用吉普', seats: 4, speed: 13.5, hp: 320, color: 0x6f8f6a },
+  bike: { id: 'bike', name: '越野摩托', seats: 2, speed: 18.5, hp: 130, color: 0xb05a4a },
+  truck: { id: 'truck', name: '运输卡车', seats: 6, speed: 11.2, hp: 440, color: 0x7a8a94 },
+};
+const CAR_TYPES = ['buggy', 'jeep', 'bike', 'truck'];
+
+// ── 输入 ────────────────────────────────────────────────────────────────────
+export const emptyInput = () => ({
+  mx: 0, mz: 0, aim: 0, fire: false, reload: false, heal: false, interact: false, swap: false,
+  ping: false, sprint: false, crouch: false, dodge: false, throwable: null, useItem: null,
+  pingKind: 'move', slot: -1, revive: false, buy: null, upgrade: null, ready: false, seq: 0,
+});
+
+export function sanitizeInput(raw) {
+  const out = emptyInput();
+  if (!raw || typeof raw !== 'object') return out;
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  let mx = clamp(num(raw.mx), -1, 1);
+  let mz = clamp(num(raw.mz), -1, 1);
+  const len = Math.hypot(mx, mz);
+  if (len > 1) { mx /= len; mz /= len; }
+  out.mx = mx; out.mz = mz;
+  out.aim = wrapAngle(num(raw.aim));
+  for (let i = 0; i < BOOL_INPUTS.length; i++) {
+    const k = BOOL_INPUTS[i];
+    out[k] = raw[k] === true;
+  }
+  out.slot = raw.slot === 0 || raw.slot === 1 ? raw.slot : -1;
+  out.throwable = THROWABLES[raw.throwable] ? raw.throwable : null;
+  out.useItem = CONSUMABLES[raw.useItem] ? raw.useItem : null;
+  out.pingKind = PING_KINDS.includes(raw.pingKind) ? raw.pingKind : 'move';
+  out.buy = typeof raw.buy === 'string' && HORDE.upgrades[raw.buy] ? raw.buy : null;
+  out.upgrade = typeof raw.upgrade === 'string' && HORDE.upgrades[raw.upgrade] ? raw.upgrade : null;
+  out.seq = clamp(Math.floor(num(raw.seq)), 0, Number.MAX_SAFE_INTEGER);
+  return out;
 }
 
+/** 应用配件后的武器有效数值（缓存于 loadout 槽位，换配件时失效）。 */
+export function effectiveWeapon(player) {
+  if (!player || !Array.isArray(player.loadout)) return null;
+  const slot = player.loadout[player.slot | 0] || player.loadout[0];
+  if (!slot || !slot.type) return null;
+  if (!slot._eff) slot._eff = applyAttachmentMods(getWeapon(slot.type), slot.attachments || []);
+  return slot._eff;
+}
+
+// ── Match ───────────────────────────────────────────────────────────────────
 export class Match {
-  constructor({ seed = 1, duration = 360, maxPlayers = MAX_PLAYERS, mode = 'squad' } = {}) {
-    this.rng = randomGenerator(seed);
-    this.duration = clamp(Number.isFinite(duration) ? duration : 360, 60, 1800);
-    this.maxPlayers = clamp(Math.floor(maxPlayers), SQUAD_SIZE, MAX_PLAYERS);
-    this.mode = mode === 'solo' ? 'solo' : 'squad';
-    this.teamSize = this.mode === 'solo' ? 1 : SQUAD_SIZE;
-    this.maxTeams = Math.ceil(this.maxPlayers / this.teamSize);
-    this.clock = 0;
-    this.time = 0;
+  constructor({
+    mapId = 'qinglan', seed = 1, mode = 'squad', maxPlayers = MAX_PLAYERS, duration = null,
+    difficulty = 'veteran', humanTeam = 0, horde = false,
+  } = {}) {
+    this.seed = seed >>> 0;
+    this.rng = mapgen.mulberry32(this.seed);
+    this.mapId = mapId;
+    this.mapDef = getMapDef(mapId) || getMapDef('qinglan');
+    this.mapName = this.mapDef?.name || '青岚岛';
+    this.weather = this.mapDef?.weather || 'clear';
+    this.timeOfDay = this.mapDef?.timeOfDay || 'day';
+    this.world = createWorld(this.mapId);
+    this.mode = MATCH_MODES.includes(mode) ? mode : 'squad';
+    this.teamSize = this.mode === 'solo' || this.mode === 'training' ? 1 : SQUAD_SIZE;
+    this.hordeMode = horde === true || this.mode === 'horde';
+    this.horde = this.hordeMode;
+    this.humanTeam = Number.isFinite(humanTeam) ? humanTeam : 0;
+    this.maxPlayers = clamp(Math.floor(maxPlayers) || MAX_PLAYERS, 2, MAX_PLAYERS);
+    this.maxTeams = Math.max(1, Math.ceil(this.maxPlayers / this.teamSize));
+    this.duration = clamp(
+      Number.isFinite(duration) ? duration : (DEFAULT_DURATION[this.mode] || 420), 60, 1800,
+    );
+    this.difficulty = DIFFICULTY[difficulty] ? difficulty : 'veteran';
     this.phase = 'waiting';
+    this.time = 0;
+    this.matchTime = 0;
+    this.phaseTime = 0;
     this.players = [];
     this.loot = [];
-    this.cars = [[7,9],[-8,-32],[36,7],[-38,12],[8,110],[-110,8],[-8,-118],[118,-8]].map(([x,z], n) => ({ id: `c${n + 1}`, x, z, angle: 0, hp: 240, driver: null, seats: [null, null, null, null] }));
-    this.zone = { x: 0, z: 0, radius: WORLD_RADIUS, next: 60, damage: 5 };
+    this.cars = [];
+    this.grenades = [];
+    this.smokes = [];
+    this.fires = [];
+    this.pings = [];
+    this.drops = [];
     this.events = [];
     this.eventId = 0;
     this.lootId = 0;
-    this.winner = null;
+    this.entityId = 0;
+    this.zone = null;
     this.winnerTeam = null;
     this.resultReason = null;
-    this.teamRanks = new Map();
-    this.grenades = []; this.smokes = []; this.pings = []; this.drops = [];
-    this.nextDrop = 75; this.entityId = 0;
-    this.generateLoot();
+    this.result = null;
+    this.hordeRun = null;
+    this.tickCount = 0;
+    this.nextDrop = 0;
+    this.dropsLeft = 0;
+    this.startedAt = 0;
+    this.counters = { lootSpawned: 0, kills: 0, shots: 0 };
+    this._rankCounter = 0;
+    this._setupZone();
+    this._setupCars();
+    this._generateLoot();
   }
 
-  generateLoot() {
-    for (const [i, b] of MAP.buildings.entries()) {
-      this.addLoot(['rifle', 'smg', 'marksman', 'shotgun', 'sniper', 'lmg'][i % 6], b.x - 2, b.z);
-      this.addLoot('ammo', b.x + 2, b.z);
-      this.addLoot(i % 2 ? 'med' : 'armor', b.x, b.z + 2);
-    }
-    for (let i = 0; i < 165; i++) {
-      const p = this.freePosition(WORLD_RADIUS - 8);
-      this.addLoot(['rifle', 'ammo', 'med', 'armor', 'shotgun', 'grenade', 'smoke', 'smg'][i % 8], p.x, p.z);
-    }
-    this.addLoot('rifle', 9, 15);
-    this.addLoot('armor', 6, 15);
-    this.addLoot('med', 10, 18);
-  }
-
-  freePosition(radius, origin = null) {
-    for (let i = 0; i < 400; i++) {
-      const a = this.rng() * Math.PI * 2, r = Math.sqrt(this.rng()) * radius;
-      const p = origin ? { x: origin.x + Math.cos(a) * (2 + this.rng() * 6), z: origin.z + Math.sin(a) * (2 + this.rng() * 6) } : { x: Math.sin(a) * r, z: Math.cos(a) * r };
-      if (!blocked(p.x, p.z, 1.2) && Math.hypot(p.x, p.z) < WORLD_RADIUS - 2) return p;
-    }
-    return { x: 0, z: 0 };
-  }
-
-  addLoot(type, x, z, ammo = WEAPONS[type]?.magazine) {
-    if (this.loot.length < MAX_LOOT) this.loot.push({ id: `l${++this.lootId}`, type, x, z, ...(ammo !== undefined ? { ammo } : {}) });
-  }
-
-  addPlayer(id, name, options = {}) {
-    if (typeof options === 'boolean') options = { bot: options };
-    const bot = options.bot === true;
-    const humans = this.players.filter(p => !p.bot).length;
-    if (this.phase !== 'waiting' || this.players.length >= this.maxPlayers || this.players.some(p => p.id === id)) return null;
-    if (!bot && humans >= MAX_HUMANS_PER_ROOM) return null;
-    const team = this.mode === 'solo' ? this.nextTeam() : Number.isInteger(options.team) ? options.team : bot ? this.nextTeam() : 0;
-    if (team < 0 || team >= this.maxTeams || this.players.filter(p => p.team === team).length >= this.teamSize) return null;
-    const position = this.freePosition(WORLD_RADIUS - 16);
-    const player = {
-      id, name: String(name).replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 14) || '旅人', bot,
-      human: !bot, team, squad: team, teamName: teamName(team),
-      ...position, angle: 0, hp: 100, armor: 0, alive: true, downed: false, downedHp: 100,
-      bleedout: 0, reviveProgress: 0, reviveTarget: null, kills: 0, rank: 0, survived: 0,
-      weapon: 'pistol', ammo: 12, reserve: 72, meds: 2, car: null,
-      loadout: [{ type: 'pistol', ammo: 12 }], slot: 0, grenades: 2, smokes: 1, downedBy: null,
-      swapHeld: false, grenadeHeld: false, smokeHeld: false, pingHeld: false, pingCooldown: 0, damagedAt: -10,
-      cooldown: 0, reloadTime: 0, healTime: 0, input: emptyInput(),
-      lastInput: 0, inputSeq: -1, connected: true, disconnectedAt: null,
-      interactHeld: false, botTimer: 0, ramTimer: 0, air: 0,
+  // ── 世界与开局 ────────────────────────────────────────────────────────────
+  _setupZone() {
+    const radius = this.world?.radius || 182;
+    const startR = radius * 0.96;
+    this.zone = {
+      x: 0, z: 0, r: startR,
+      target: { x: 0, z: 0, r: startR },
+      closing: false, damage: 0, phase: -1, nextIn: ZONE_FIRST_WAIT, t: 0,
     };
+  }
+
+  _setupCars() {
+    const spots = Array.isArray(this.world?.carSpots) ? this.world.carSpots : [];
+    const limit = Math.min(spots.length, MAX_CARS);
+    for (let i = 0; i < limit; i++) {
+      const s = spots[i];
+      const type = CARS[s.type] ? s.type : CAR_TYPES[i % CAR_TYPES.length];
+      const def = CARS[type];
+      this.cars.push({
+        id: `car${i + 1}`, type, x: s.x, z: s.z, angle: s.rot ?? s.angle ?? 0,
+        hp: def.hp, maxHp: def.hp, color: def.color, seats: def.seats,
+        occupants: new Array(def.seats).fill(null), driver: null, speed: 0,
+        dead: false, hitCd: 0,
+      });
+    }
+  }
+
+  _generateLoot() {
+    const spots = Array.isArray(this.world?.lootSpots) ? this.world.lootSpots : [];
+    for (let i = 0; i < spots.length && this.loot.length < MAX_LOOT; i++) {
+      const spot = spots[i];
+      const entries = buildLootForSpot(this.rng, spot);
+      for (let k = 0; k < entries.length && this.loot.length < MAX_LOOT; k++) {
+        const e = entries[k];
+        this.addLoot(e.kind, e.item, spot.x + (this.rng() - 0.5) * 1.4,
+          spot.z + (this.rng() - 0.5) * 1.4, e);
+      }
+    }
+    this.counters.lootSpawned = this.loot.length;
+  }
+
+  addLoot(kind, item, x, z, opts = {}) {
+    if (this.loot.length >= MAX_LOOT) return null;
+    const entry = {
+      id: `l${++this.lootId}`, kind, item, x, z, y: 0.05,
+      qty: opts.qty ?? 1,
+      ammo: opts.ammo ?? null,
+      rarity: opts.rarity || 'common',
+      attachments: Array.isArray(opts.attachments) ? opts.attachments.slice() : [],
+      taken: false,
+    };
+    if (kind === 'consumable' && CONSUMABLES[item]) entry.qty = opts.qty ?? 1;
+    if (kind === 'throwable' && THROWABLES[item]) entry.qty = opts.qty ?? 1;
+    if (kind === 'armor' && ARMORS[item]) entry.qty = 1;
+    this.loot.push(entry);
+    return entry;
+  }
+
+  addPlayer(id, name, opts = {}) {
+    const bot = opts.bot === true;
+    let team = Number.isInteger(opts.team) ? opts.team : -1;
+    if (team < 0) team = this._nextTeamSlot();
+    if (team < 0) team = 0;
+    if (team >= this.maxTeams) this.maxTeams = Math.min(MAX_PLAYERS, team + 1);
+    const player = {
+      id, name: (typeof name === 'string' && name ? name : '旅人').slice(0, 20), bot,
+      team, connected: true, difficulty: DIFFICULTY[opts.difficulty] ? opts.difficulty : this.difficulty,
+      hp: COMBAT.maxHp, armor: 0, armorTier: 0, shield: 0, stamina: MOVE.sprintStamina,
+      state: 'normal', x: 0, z: 0, y: 0, angle: this.rng() * TAU, chute: 0,
+      downed: false, downedHp: 100, bleedout: 0, reviveProgress: 0, reviveTarget: null,
+      alive: true, kills: 0, assists: 0, damage: 0, rank: 0, score: 0,
+      loadout: [null, null], slot: 0,
+      mags: { light: 0, medium: 0, heavy: 0, shell: 0, bolt: 0 },
+      meds: 0, bandages: 0, energy: 0, shields: 0,
+      grenades: 0, smokes: 0, flashes: 0, molotovs: 0,
+      backpack: 'bp1', car: null, seat: -1,
+      input: emptyInput(), lastSeq: -1, moved: false,
+      fireCd: 0, reloadTime: 0, healTime: 0, healKind: null, healTotal: 0,
+      recoil: 0, spreadBloom: 0, blind: 0, haste: 0,
+      dodgeTime: 0, dodgeCd: 0, dodgeDx: 0, dodgeDz: 0,
+      interactCd: 0, pingCd: 0, throwCd: 0, useCd: 0,
+      lastHitBy: null, lastHitAt: -99, downedAt: 0, deadAt: 0,
+      accuracy: 1, lastFireAt: -99, think: null, aggro: null,
+      buy: null, upgradesBought: 0,
+    };
+    this._applyLoadout(player, opts.loadout);
     this.players.push(player);
+    if (this.phase !== 'waiting' && this.phase !== 'loading') this._spawnPlayer(player);
     return player;
   }
 
-  nextTeam() {
-    const counts = Array.from({ length: this.maxTeams }, (_, team) => this.players.filter(p => p.team === team).length);
-    let team = 0;
-    for (let i = 1; i < counts.length; i++) if (counts[i] < counts[team]) team = i;
-    if (counts[team] >= this.teamSize) team = counts.findIndex(count => count < this.teamSize);
-    return team < 0 ? 0 : team;
+  _nextTeamSlot() {
+    const counts = new Array(this.maxTeams).fill(0);
+    for (let i = 0; i < this.players.length; i++) counts[this.players[i].team] = (counts[this.players[i].team] || 0) + 1;
+    for (let t = 0; t < this.maxTeams; t++) if (counts[t] < this.teamSize) return t;
+    return -1;
   }
 
-  start() {
-    if (this.phase !== 'waiting' || this.players.length === 0) return false;
-    while (this.players.length < this.maxPlayers) {
-      const team = this.nextTeam();
-      this.addPlayer(`bot-${this.players.length}`, BOT_NAMES[this.players.length % BOT_NAMES.length], { bot: true, team });
+  nextTeam() { return Math.max(0, this._nextTeamSlot()); }
+
+  _applyLoadout(player, loadout) {
+    const list = Array.isArray(loadout) && loadout.length ? loadout : [{ type: 'p9' }, null];
+    for (let i = 0; i < 2; i++) {
+      const raw = list[i];
+      if (!raw || !WEAPONS[raw.type]) { player.loadout[i] = null; continue; }
+      const w = getWeapon(raw.type);
+      player.loadout[i] = {
+        type: raw.type,
+        ammo: Number.isFinite(raw.ammo) ? clamp(Math.floor(raw.ammo), 0, w.magazine) : w.magazine,
+        attachments: Array.isArray(raw.attachments)
+          ? raw.attachments.filter((a) => ATTACHMENTS[a]).slice(0, 4) : [],
+        _eff: null,
+      };
+      const eff = applyAttachmentMods(w, player.loadout[i].attachments);
+      const ammoDef = AMMO_TYPES[eff.ammo] || AMMO_TYPES.light;
+      player.mags[eff.ammo] = Math.max(player.mags[eff.ammo] || 0, Math.round(ammoDef.cap * 0.6));
     }
-    this.assignSquadSpawns();
-    this.phase = 'deploying';
-    this.time = 0;
-    for (const p of this.players) { p.air = 1; p.input = emptyInput(); }
-    this.event('start', { teams: this.teamSummary() });
+    player.slot = player.loadout[0] ? 0 : 1;
+    if (!player.loadout[1]) player.loadout[1] = null;
+  }
+
+  removePlayer(id) {
+    const i = this.players.findIndex((p) => p.id === id);
+    if (i < 0) return false;
+    const p = this.players[i];
+    if (p.car != null) this._exitCar(p, true);
+    this.players.splice(i, 1);
+    this._checkTeamWipe();
     return true;
   }
 
-  assignSquadSpawns() {
-    const anchors = new Map();
-    const separation = this.mode === 'solo' ? 18 : 38;
-    for (let team = 0; team < this.maxTeams; team++) {
-      let point = team === 0 ? { x: 8, z: 18 } : this.freePosition(WORLD_RADIUS - 20);
-      for (let n = 0; n < 700 && [...anchors.values()].some(p => distance(p, point) < separation); n++) point = this.freePosition(WORLD_RADIUS - 20);
-      anchors.set(team, point);
+  /** 进入对局：补 bot、撒点、清空等待态。 */
+  start() {
+    if (this.phase !== 'waiting') return false;
+    if (this.hordeMode) return this._startHorde();
+    const target = this.mode === 'training' ? Math.max(this.players.length, 16) : this.maxPlayers;
+    let n = this.players.filter((p) => !p.bot).length;
+    let guard = 0;
+    while (this.players.length < target && guard++ < MAX_PLAYERS * 2) {
+      const team = this._nextTeamSlot();
+      if (team < 0) break;
+      const name = `${BOT_NAMES[(n + this.players.length) % BOT_NAMES.length]}·${1 + (n % 9)}`;
+      this.addPlayer(`bot${++this.entityId}`, name, {
+        bot: true, team,
+        difficulty: this.mode === 'training' ? 'recruit' : this.difficulty,
+      });
+      n++;
     }
-    const offsets = [[0, 0], [2.5, 1], [-2.5, 1], [0, -2.8]];
-    for (const p of this.players) {
-      const anchor = anchors.get(p.team), offset = offsets[this.players.filter(t => t.team === p.team).indexOf(p) % offsets.length];
-      p.x = anchor.x + offset[0]; p.z = anchor.z + offset[1];
-      if (blocked(p.x, p.z, .6) || !clearLine(anchor, p)) {
-        let free = anchor;
-        for (let n = 0; n < 150; n++) { const candidate = this.freePosition(8, anchor); if (clearLine(anchor, candidate)) { free = candidate; break; } }
-        p.x = free.x; p.z = free.z;
-      }
+    for (let i = 0; i < this.players.length; i++) this._spawnPlayer(this.players[i]);
+    this.phase = 'deploying';
+    this.time = 0;
+    this.matchTime = 0;
+    this.startedAt = 0;
+    this.nextDrop = this.mode === 'training' ? 60 : 45;
+    this.dropsLeft = this.mode === 'training' ? 1 : 3;
+    this._emit('start', { mode: this.mode, players: this.players.length });
+    return true;
+  }
+
+  _spawnPlayer(p) {
+    const spot = this._spawnPoint(p);
+    p.x = spot.x; p.z = spot.z; p.y = 0;
+    p.state = 'normal'; p.hp = COMBAT.maxHp; p.alive = true; p.downed = false;
+    p.downedHp = 100; p.bleedout = 0; p.reviveProgress = 0; p.reviveTarget = null;
+    p.car = null; p.seat = -1; p.chute = 0;
+    p.angle = this.rng() * TAU;
+    p.armorTier = p.armorTier || 0;
+    p.armor = p.armorTier ? (armorForTier(p.armorTier)?.durability || 0) : 0;
+    p.stamina = MOVE.sprintStamina;
+    p.fireCd = 0; p.reloadTime = 0; p.healTime = 0; p.healKind = null;
+  }
+
+  _spawnPoint(p) {
+    const anchors = this.world?.spawnAnchors?.length ? this.world.spawnAnchors : null;
+    const radius = (this.world?.radius || 182) * (this.zone?.r ? this.zone.r / (this.world?.radius || 182) : 1);
+    if (!anchors) {
+      const a = this.rng() * TAU;
+      const rr = Math.sqrt(this.rng()) * Math.max(8, radius * 0.8);
+      return { x: Math.cos(a) * rr, z: Math.sin(a) * rr };
     }
+    const base = (p.team * 3 + (p.bot ? 1 : 0)) % anchors.length;
+    for (let i = 0; i < 8; i++) {
+      const a = anchors[(base + i * 5) % anchors.length];
+      const x = a.x + (this.rng() - 0.5) * 4;
+      const z = a.z + (this.rng() - 0.5) * 4;
+      if (!this.world.blocked(x, z, MOVE.radius)) return { x, z };
+    }
+    const a = anchors[base] || anchors[0];
+    return { x: a.x, z: a.z };
+  }
+
+  // ── 主循环 ────────────────────────────────────────────────────────────────
+  update(dt = 1 / TICK_RATE) {
+    const step = Number.isFinite(dt) ? clamp(dt, 0.0001, 0.1) : 1 / TICK_RATE;
+    if (this.phase === 'ended') return;
+    this.tickCount++;
+    if (this.phase === 'waiting' || this.phase === 'loading') return;
+    this.time += step;
+    this.matchTime += step;
+    if (this.phase === 'deploying' && this.time > 2.5) this.phase = 'live';
+    this._updatePlayers(step);
+    this._updateGrenades(step);
+    this._updateCars(step);
+    this._updateZones(step);
+    this._updateDrops(step);
+    this._updateHorde(step);
+    this._bots(step);
+    this._checkEnd(step);
   }
 
   input(id, raw) {
-    const p = this.players.find(p => p.id === id);
-    if (!p || p.bot || !p.alive || !p.connected || this.phase === 'ended') return;
-    const input = sanitizeInput(raw);
-    if (input.seq <= p.inputSeq) return;
-    p.input = input;
-    p.inputSeq = input.seq;
-    p.lastInput = this.time;
-  }
-
-  event(type, data) {
-    this.events.push({ id: ++this.eventId, type, time: round(this.time), ...data });
-    if (this.events.length > 80) this.events.shift();
+    const p = this._find(id);
+    if (!p) return false;
+    const next = sanitizeInput(raw);
+    if (next.seq <= p.lastSeq && next.seq !== 0) return false;
+    if (next.seq) p.lastSeq = next.seq;
+    next.throwable = p.input.throwable && !next.throwable ? null : next.throwable;
+    p.input = next;
+    return true;
   }
 
   disconnect(id) {
-    const p = this.players.find(p => p.id === id);
-    if (!p) return;
-    p.connected = false;
-    p.disconnectedAt = this.clock;
-    p.input = emptyInput();
-  }
-
-  reconnect(id) {
-    const p = this.players.find(p => p.id === id);
+    const p = this._find(id);
     if (!p) return false;
-    p.connected = true;
-    p.disconnectedAt = null;
-    p.inputSeq = -1;
+    p.connected = false;
     p.input = emptyInput();
     return true;
   }
 
-  update(dt = 1 / TICK_RATE) {
-    if (this.phase === 'waiting' || this.phase === 'loading' || this.phase === 'ended') return;
-    dt = clamp(dt, 0, .1);
-    this.clock += dt;
-    this.time += dt;
-    if (this.phase === 'deploying') {
-      for (const p of this.players) p.air = Math.max(0, 1 - this.time / 3.5);
-      if (this.time >= 3.5) { this.phase = 'playing'; this.time = 0; for (const p of this.players) { p.input = emptyInput(); p.lastInput = 0; } this.event('land', {}); }
+  reconnect(id) {
+    const p = this._find(id);
+    if (!p) return false;
+    p.connected = true;
+    return true;
+  }
+
+  _find(id) {
+    for (let i = 0; i < this.players.length; i++) if (this.players[i].id === id) return this.players[i];
+    return null;
+  }
+
+  _emit(type, data) {
+    this.eventId++;
+    const ev = { id: this.eventId, type, time: r2(this.time) };
+    if (data) for (const k in data) ev[k] = data[k];
+    this.events.push(ev);
+    if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+    return ev;
+  }
+
+  // ── 玩家：输入 / 状态 / 移动 / 耐力 ───────────────────────────────────────
+  _updatePlayers(dt) {
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      p.fireCd = Math.max(0, p.fireCd - dt);
+      p.dodgeCd = Math.max(0, p.dodgeCd - dt);
+      p.interactCd = Math.max(0, p.interactCd - dt);
+      p.pingCd = Math.max(0, p.pingCd - dt);
+      p.throwCd = Math.max(0, p.throwCd - dt);
+      p.blind = Math.max(0, p.blind - dt);
+      p.haste = Math.max(0, p.haste - dt);
+      p.spreadBloom = Math.max(0, p.spreadBloom - dt * 2.6);
+      p.recoil = Math.max(0, p.recoil - dt * 3.2);
+      if (!p.alive) { p.state = 'dead'; continue; }
+      if (!p.connected && !p.bot) { p.input = emptyInput(); }
+      if (p.downed) { this._updateDowned(p, dt); continue; }
+      this._updateReload(p, dt);
+      this._updateHeal(p, dt);
+      if (p.car != null) { this._carActions(p); this._driveInput(p, dt); continue; }
+      this._updateDodge(p, dt);
+      if (p.dodgeTime > 0) continue;
+      this._movePlayer(p, dt);
+      this._handleActions(p, dt);
+    }
+  }
+
+  _movePlayer(p, dt) {
+    const inp = p.input;
+    let mx = inp.mx, mz = inp.mz;
+    const moving = mx * mx + mz * mz > 0.0004;
+    let speed;
+    if (inp.crouch) { p.state = 'crouch'; speed = MOVE.crouch; }
+    else if (inp.sprint && p.stamina >= 1) {
+      if (p.stamina > MOVE.sprintMin || p.state === 'sprint') { p.state = 'sprint'; speed = MOVE.sprint; }
+      else { p.state = 'normal'; speed = MOVE.walk; }
+    } else { p.state = 'normal'; speed = MOVE.walk; }
+    const weapon = effectiveWeapon(p);
+    if (weapon) speed *= weapon.moveMul;
+    if (inp.fire) speed *= MOVE.adsMul;
+    if (this.world.inWater && this.world.inWater(p.x, p.z)) speed *= MOVE.waterMul;
+    if (p.haste > 0) speed *= 1.18;
+    if (moving) {
+      const len = Math.hypot(mx, mz) || 1;
+      mx /= len; mz /= len;
+      this.world.moveBody(p, mx * speed * dt, mz * speed * dt, MOVE.radius);
+      if (Math.abs(inp.aim) > 0.0001) p.angle = inp.aim;
+      else p.angle = wrapAngle(Math.atan2(mx, mz));
+      p.moved = true;
+    } else {
+      p.moved = false;
+      if (Math.abs(inp.aim) > 0.0001) p.angle = inp.aim;
+    }
+    if (p.state === 'sprint' && moving) p.stamina = Math.max(0, p.stamina - MOVE.sprintDrain * dt);
+    else p.stamina = Math.min(MOVE.sprintStamina, p.stamina + MOVE.sprintRegen * dt);
+  }
+
+  _updateDodge(p, dt) {
+    if (p.dodgeTime > 0) {
+      p.dodgeTime = Math.max(0, p.dodgeTime - dt);
+      this.world.moveBody(p, p.dodgeDx * dt, p.dodgeDz * dt, MOVE.radius);
+      p.state = 'dodge';
+      if (p.dodgeTime <= 0) p.state = 'normal';
       return;
     }
-    const progress = clamp((this.time - 28) / (this.duration - 28), 0, 1);
-    this.zone.radius = WORLD_RADIUS * (1 - progress) + 2 * progress;
-    this.zone.next = Math.max(2, this.zone.radius - 19);
-    this.zone.damage = 4 + progress * 20;
-    for (const p of this.players) {
-      if (!p.alive) continue;
-      p.survived = this.time;
-      if (!p.connected && p.disconnectedAt !== null && this.clock - p.disconnectedAt > 20) { this.kill(p, null, 'disconnect'); continue; }
-      if (p.bot) this.botInput(p, dt);
-      else if (this.time - p.lastInput > .4) p.input = emptyInput();
-      const i = p.input;
-      p.pingCooldown = Math.max(0, p.pingCooldown - dt);
-      if (!p.downed && i.swap && !p.swapHeld) this.swapWeapon(p);
-      if (!p.downed && i.grenade && !p.grenadeHeld) this.throwGrenade(p, false);
-      if (!p.downed && i.smoke && !p.smokeHeld) this.throwGrenade(p, true);
-      if (i.ping && !p.pingHeld && !p.pingCooldown) {
-        this.pings = this.pings.filter(ping => ping.player !== p.id);
-        const range = Math.min(25, wallDistance(p.x, p.z, Math.sin(p.angle), Math.cos(p.angle), 25));
-        this.pings.push({ id: ++this.entityId, player: p.id, team: p.team, x: p.x + Math.sin(p.angle) * range, z: p.z + Math.cos(p.angle) * range, ttl: 10 });
-        p.pingCooldown = 1;
+    if (p.input.dodge && p.dodgeCd <= 0) {
+      const inp = p.input;
+      let dx = inp.mx, dz = inp.mz;
+      if (dx * dx + dz * dz < 0.0004) { dx = Math.sin(p.angle); dz = Math.cos(p.angle); }
+      const len = Math.hypot(dx, dz) || 1;
+      const speed = MOVE.dodgeDistance / MOVE.dodgeTime;
+      p.dodgeDx = (dx / len) * speed;
+      p.dodgeDz = (dz / len) * speed;
+      p.dodgeTime = MOVE.dodgeTime;
+      p.dodgeCd = MOVE.dodgeCooldown;
+      p.state = 'dodge';
+      p.reloadTime = 0; p.healTime = 0; p.healKind = null;
+      this._emit('dodge', { player: p.id, x: r2(p.x), z: r2(p.z) });
+    }
+  }
+
+  /** 主输入分派：开火 / 换弹 / 换枪 / 用药 / 交互 / 投掷 / 标记 / 救人 / 购买。 */
+  _handleActions(p, dt) {
+    const inp = p.input;
+    if (inp.slot >= 0 && inp.slot !== p.slot) this._swapSlot(p, inp.slot);
+    if (inp.swap) this._swapSlot(p, p.slot === 0 ? 1 : 0);
+    if (inp.reload && p.reloadTime <= 0) this.reload(p);
+    if (inp.useItem && p.healTime <= 0) this.useItem(p, inp.useItem);
+    if (inp.throwable && p.throwCd <= 0) this.throwGrenade(p, inp.throwable);
+    if (inp.interact && p.interactCd <= 0) this._interact(p);
+    if (inp.revive) this._tryRevive(p, dt);
+    else p.reviveProgress = 0;
+    if (inp.ping && p.pingCd <= 0) this._ping(p, inp.pingKind);
+    if (inp.buy || inp.upgrade) this._buy(p, inp.buy || inp.upgrade);
+    if (p.healTime > 0 || p.reloadTime > 0) return;
+    if (inp.fire) this.tryFire(p);
+  }
+
+  // ── 射击 ──────────────────────────────────────────────────────────────────
+  tryFire(p) {
+    const slot = p.loadout[p.slot];
+    const weapon = effectiveWeapon(p);
+    if (!weapon || !slot || !p.alive || p.downed || p.car != null) return false;
+    if (p.fireCd > 0 || p.healTime > 0) return false;
+    if (slot.ammo <= 0) { this.reload(p); return false; }
+    p.fireCd = weapon.interval;
+    slot.ammo--;
+    p.lastFireAt = this.time;
+    const moving = p.moved;
+    let spread = weapon.spread * (moving ? 1.85 : 1) * (p.state === 'crouch' ? 0.62 : 1);
+    spread += p.spreadBloom * weapon.spread * 1.4 + p.recoil * 0.0012;
+    if (p.state === 'sprint') spread *= 1.3;
+    const pellets = weapon.pellets || 1;
+    const ox = p.x + Math.sin(p.angle) * 0.45;
+    const oz = p.z + Math.cos(p.angle) * 0.45;
+    let hits = 0;
+    let lastX = ox; let lastZ = oz;
+    for (let i = 0; i < pellets; i++) {
+      const a = p.angle + (this.rng() * 2 - 1) * spread;
+      const dx = Math.sin(a); const dz = Math.cos(a);
+      const hit = this._traceShot(ox, oz, dx, dz, weapon.range, p);
+      if (hit) {
+        hits++;
+        this._applyShotDamage(p, hit, weapon);
       }
-      p.swapHeld = i.swap; p.grenadeHeld = i.grenade; p.smokeHeld = i.smoke; p.pingHeld = i.ping;
-      const w = WEAPONS[p.weapon];
-      p.cooldown = Math.max(0, p.cooldown - dt);
-      p.ramTimer = Math.max(0, p.ramTimer - dt);
-      if (p.reloadTime > 0) {
-        p.reloadTime = Math.max(0, p.reloadTime - dt);
-        if (!p.reloadTime) { const amount = Math.min(w.magazine - p.ammo, p.reserve); p.ammo += amount; p.reserve -= amount; }
+      lastX = ox + dx * Math.min(weapon.range, hit ? hit.t : weapon.range);
+      lastZ = oz + dz * Math.min(weapon.range, hit ? hit.t : weapon.range);
+    }
+    p.spreadBloom = Math.min(2.4, p.spreadBloom + weapon.recoil * 0.11);
+    p.recoil = Math.min(9, p.recoil + weapon.recoil * 0.55);
+    this.counters.shots++;
+    this._emit('shot', {
+      player: p.id, x: r2(ox), z: r2(oz), tx: r2(lastX), tz: r2(lastZ),
+      weapon: weapon.id, hit: hits > 0, hits,
+    });
+    if (slot.ammo <= 0) this.reload(p);
+    return true;
+  }
+
+  _traceShot(ox, oz, dx, dz, range, shooter) {
+    let best = null; let bestT = range;
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (q === shooter || !q.alive) continue;
+      if (q.team === shooter.team && COMBAT.friendlyFire <= 0) continue;
+      let radius = 0.7;
+      if (q.car != null) radius = MOVE.vehicleRadius;
+      else if (q.downed) radius = 0.5;
+      else if (q.state === 'crouch') radius = 0.45;
+      const rx = q.x - ox; const rz = q.z - oz;
+      const t = rx * dx + rz * dz;
+      if (t <= 0.2 || t > bestT) continue;
+      const perp = Math.abs(rx * dz - rz * dx);
+      if (perp > radius) continue;
+      bestT = t; best = { kind: 'player', target: q, t };
+    }
+    for (let i = 0; i < this.cars.length; i++) {
+      const c = this.cars[i];
+      if (c.dead) continue;
+      const rx = c.x - ox; const rz = c.z - oz;
+      const t = rx * dx + rz * dz;
+      if (t <= 0.3 || t > bestT) continue;
+      const perp = Math.abs(rx * dz - rz * dx);
+      if (perp > 1.6) continue;
+      bestT = t; best = { kind: 'car', target: c, t };
+    }
+    if (!best) return null;
+    const wall = this.world.wallDistance(ox, oz, dx, dz, range);
+    if (wall < best.t - 0.05) return null;
+    return best;
+  }
+
+  _applyShotDamage(shooter, hit, weapon) {
+    if (hit.kind === 'player') {
+      const target = hit.target;
+      const dist = hit.t;
+      const falloff = damageAtDistance(weapon, dist);
+      const mul = DIFFICULTY[shooter.difficulty]?.dmgMul || 1;
+      this.damage(target, falloff * mul, shooter.id, { weapon: weapon.id, source: shooter });
+      shooter.accuracy = shooter.accuracy * 0.98 + 0.02;
+    } else if (hit.kind === 'car') {
+      const car = hit.target;
+      this._damageCar(car, damageAtDistance(weapon, hit.t), shooter);
+    }
+  }
+
+  // ── 伤害 / 倒地 / 淘汰 ────────────────────────────────────────────────────
+  damage(target, amount, sourceId = null, opts = {}) {
+    if (!target || !target.alive || !(amount > 0)) return 0;
+    const src = opts.source || (sourceId ? this._find(sourceId) : null);
+    let dmg = amount;
+    if (target.downed) {
+      const d = dmg * COMBAT.downedDamageMul;
+      target.downedHp -= d;
+      target.lastHitBy = sourceId;
+      if (target.downedHp <= 0) this.kill(target, sourceId, 'bleed');
+      return d;
+    }
+    if (target.shield > 0) {
+      const s = Math.min(target.shield, dmg);
+      target.shield -= s; dmg -= s;
+    }
+    if (dmg > 0 && target.armor > 0 && target.armorTier > 0) {
+      const def = armorForTier(target.armorTier);
+      const absorb = def?.absorb ?? COMBAT.armorBaseAbsorb;
+      const room = target.armor / COMBAT.armorDurabilityLoss;
+      let absorbed = Math.min(room, dmg * absorb, dmg * 0.6);
+      absorbed = Math.min(absorbed, dmg);
+      target.armor = Math.max(0, target.armor - absorbed * COMBAT.armorDurabilityLoss);
+      dmg -= absorbed;
+      if (target.armor <= 0.01) { target.armor = 0; target.armorTier = 0; }
+    }
+    target.hp = Math.max(0, target.hp - dmg);
+    target.lastHitBy = sourceId;
+    target.lastHitAt = this.time;
+    if (src && src !== target) src.damage += Math.min(dmg, amount);
+    if (target.hp <= 0) {
+      const mates = this._teamMates(target).filter((m) => m !== target && m.alive && !m.downed);
+      const canDown = !opts.noDown && this.teamSize > 1 && mates.length > 0 && this.mode !== 'solo'
+        && this.mode !== 'training' && !this.hordeMode;
+      if (canDown) this._downPlayer(target, sourceId);
+      else this.kill(target, sourceId, 'shot');
+    }
+    return dmg;
+  }
+
+  heal(target, amount) {
+    if (!target || !target.alive) return 0;
+    const before = target.hp;
+    target.hp = Math.min(COMBAT.maxHp, target.hp + amount);
+    return target.hp - before;
+  }
+
+  _downPlayer(p, sourceId) {
+    p.downed = true;
+    p.hp = 0;
+    p.downedHp = 100;
+    p.bleedout = BLEEDOUT_TIME;
+    p.downedAt = this.time;
+    p.state = 'downed';
+    p.reviveProgress = 0;
+    p.reviveTarget = null;
+    p.reloadTime = 0; p.healTime = 0; p.healKind = null;
+    if (p.car != null) this._exitCar(p, true);
+    this._emit('down', { player: p.id, by: sourceId, team: p.team, x: r2(p.x), z: r2(p.z) });
+  }
+
+  kill(target, sourceId = null, reason = 'shot') {
+    if (!target || !target.alive) return false;
+    target.alive = false;
+    target.downed = false;
+    target.hp = 0;
+    target.state = 'dead';
+    target.deadAt = this.time;
+    target.bleedout = 0;
+    target.reviveProgress = 0;
+    if (target.car != null) this._exitCar(target, true);
+    const src = sourceId ? this._find(sourceId) : null;
+    if (src && src !== target && src.team !== target.team) {
+      src.kills++;
+      src.score += 100;
+    }
+    this.counters.kills++;
+    this._emit('kill', {
+      player: target.id, by: sourceId, reason, team: target.team,
+      x: r2(target.x), z: r2(target.z), name: target.name,
+    });
+    this._checkTeamWipe();
+    return true;
+  }
+
+  /** 测试/客户端复活钩子：把倒地或阵亡的玩家拉回战场。 */
+  revive(target) {
+    if (!target) return false;
+    target.alive = true;
+    target.downed = false;
+    target.downedHp = 100;
+    target.bleedout = 0;
+    target.hp = REVIVE_HP;
+    target.reviveProgress = 0;
+    target.reviveTarget = null;
+    target.state = 'normal';
+    target.deadAt = 0;
+    return true;
+  }
+
+  _teamMates(p) {
+    const out = [];
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (q.team === p.team && q !== p) out.push(q);
+    }
+    return out;
+  }
+
+  _aliveTeamSet() {
+    const set = new Set();
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (q.alive || q.downed) set.add(q.team);
+    }
+    return set;
+  }
+
+  _assignRank(team) {
+    const alive = this._aliveTeamSet();
+    const rank = alive.size + 1;
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (q.team === team && (!q.rank || q.rank < 1)) q.rank = rank;
+    }
+    return rank;
+  }
+
+  _checkTeamWipe() {
+    if (this.phase === 'ended') return;
+    const alive = this._aliveTeamSet();
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (!q.alive && !q.downed && (!q.rank || q.rank < 1)) {
+        const matesAlive = this._teamMates(q).some((m) => m.alive || m.downed);
+        if (!matesAlive) this._assignRank(q.team);
       }
-      if (!p.downed && (i.reload || (i.fire && p.ammo === 0)) && !p.reloadTime && p.ammo < w.magazine && p.reserve > 0 && !p.healTime) p.reloadTime = w.reload;
-      if (!p.downed && i.heal && p.meds && p.hp < 100 && !p.healTime && !p.reloadTime && !p.car) p.healTime = 2.5;
-      if (p.healTime) {
-        if (p.downed || Math.hypot(i.mx, i.mz) > .1 || i.fire || p.car) p.healTime = 0;
-        else { p.healTime = Math.max(0, p.healTime - dt); if (!p.healTime) { p.hp = Math.min(100, p.hp + 65); p.meds--; this.event('heal', { player: p.id }); } }
+    }
+    if (alive.size <= 1 && this.players.length > 1 && !this.hordeMode) {
+      const winner = alive.size === 1 ? [...alive][0] : null;
+      this.end('lastTeam', winner);
+    }
+  }
+
+  // ── 换弹 / 切枪 / 消耗品 ──────────────────────────────────────────────────
+  reload(p) {
+    const slot = p.loadout[p.slot];
+    const weapon = effectiveWeapon(p);
+    if (!slot || !weapon || p.reloadTime > 0) return false;
+    const need = weapon.magazine - slot.ammo;
+    if (need <= 0) return false;
+    if ((p.mags[weapon.ammo] || 0) <= 0) return false;
+    p.reloadTime = weapon.reload;
+    p.healTime = 0; p.healKind = null;
+    this._emit('reload', { player: p.id, weapon: weapon.id, time: r2(weapon.reload) });
+    return true;
+  }
+
+  _updateReload(p, dt) {
+    if (p.reloadTime <= 0) return;
+    p.reloadTime = Math.max(0, p.reloadTime - dt);
+    if (p.reloadTime > 0) return;
+    const slot = p.loadout[p.slot];
+    const weapon = effectiveWeapon(p);
+    if (!slot || !weapon) return;
+    const need = weapon.magazine - slot.ammo;
+    const pool = p.mags[weapon.ammo] || 0;
+    const take = Math.min(need, pool);
+    if (take > 0) {
+      slot.ammo += take;
+      p.mags[weapon.ammo] = pool - take;
+      this._emit('reloaded', { player: p.id, weapon: weapon.id, ammo: slot.ammo, reserve: p.mags[weapon.ammo] });
+    }
+  }
+
+  _swapSlot(p, idx) {
+    if (idx !== 0 && idx !== 1) return false;
+    if (!p.loadout[idx] || idx === p.slot) return false;
+    p.slot = idx;
+    p.fireCd = Math.max(p.fireCd, 0.35);
+    p.reloadTime = 0;
+    p.spreadBloom = 0;
+    this._emit('swap', { player: p.id, slot: idx, weapon: p.loadout[idx].type });
+    return true;
+  }
+
+  useItem(p, kind) {
+    const def = CONSUMABLES[kind];
+    if (!def || !p.alive || p.downed || p.car != null) return false;
+    if (p.healTime > 0 || p.reloadTime > 0) return false;
+    if (!this._countOf(p, kind)) return false;
+    p.healTime = def.use;
+    p.healTotal = def.use;
+    p.healKind = kind;
+    this._emit('healStart', { player: p.id, item: kind, time: r2(def.use) });
+    return true;
+  }
+
+  _countOf(p, kind) {
+    if (kind === 'bandage') return p.bandages;
+    if (kind === 'medkit') return p.meds;
+    if (kind === 'energy') return p.energy;
+    if (kind === 'shield') return p.shields;
+    return 0;
+  }
+
+  _takeOne(p, kind) {
+    if (kind === 'bandage') p.bandages = Math.max(0, p.bandages - 1);
+    else if (kind === 'medkit') p.meds = Math.max(0, p.meds - 1);
+    else if (kind === 'energy') p.energy = Math.max(0, p.energy - 1);
+    else if (kind === 'shield') p.shields = Math.max(0, p.shields - 1);
+  }
+
+  _updateHeal(p, dt) {
+    if (p.healTime <= 0) return;
+    if (p.moved) {
+      p.healTime = 0; p.healKind = null;
+      this._emit('healCancel', { player: p.id });
+      return;
+    }
+    p.healTime = Math.max(0, p.healTime - dt);
+    if (p.healTime > 0) return;
+    const kind = p.healKind;
+    p.healKind = null;
+    const def = CONSUMABLES[kind];
+    if (!def || !this._countOf(p, kind)) return;
+    this._takeOne(p, kind);
+    if (def.heal) this.heal(p, def.heal);
+    if (def.shield) p.shield = Math.min(COMBAT.maxShield, p.shield + def.shield);
+    if (def.haste) { p.haste = def.hasteTime || 12; }
+    this._emit('healed', { player: p.id, item: kind, hp: r2(p.hp), shield: r2(p.shield) });
+  }
+
+  // ── 投掷物 ────────────────────────────────────────────────────────────────
+  _throwCount(p, kind) {
+    if (kind === 'frag') return p.grenades;
+    if (kind === 'smoke') return p.smokes;
+    if (kind === 'flash') return p.flashes;
+    if (kind === 'molotov') return p.molotovs;
+    return 0;
+  }
+
+  _takeThrowable(p, kind) {
+    if (kind === 'frag') p.grenades = Math.max(0, p.grenades - 1);
+    else if (kind === 'smoke') p.smokes = Math.max(0, p.smokes - 1);
+    else if (kind === 'flash') p.flashes = Math.max(0, p.flashes - 1);
+    else if (kind === 'molotov') p.molotovs = Math.max(0, p.molotovs - 1);
+  }
+
+  throwGrenade(p, kind) {
+    const def = THROWABLES[kind];
+    if (!def || !p.alive || p.downed || p.throwCd > 0) return false;
+    if (!this._throwCount(p, kind)) return false;
+    if (this.grenades.length >= MAX_GRENADES) return false;
+    this._takeThrowable(p, kind);
+    p.throwCd = 0.6;
+    const inp = p.input;
+    let tx = p.x + Math.sin(p.angle) * 18;
+    let tz = p.z + Math.cos(p.angle) * 18;
+    if (inp.mx * inp.mx + inp.mz * inp.mz > 0.01 && !(Math.abs(Math.atan2(inp.mx, inp.mz) - p.angle) < 0.25 && inp.mx !== 0)) {
+      const len = Math.hypot(inp.mx, inp.mz);
+      tx = p.x + (inp.mx / len) * 14;
+      tz = p.z + (inp.mz / len) * 14;
+    }
+    const wall = this.world.wallDistance(p.x, p.z, (tx - p.x) / 14 || 0, (tz - p.z) / 14 || 0, 14);
+    const travel = Math.max(2.5, Math.min(14, wall - 0.6));
+    const dirLen = Math.hypot(tx - p.x, tz - p.z) || 1;
+    tx = p.x + ((tx - p.x) / dirLen) * travel;
+    tz = p.z + ((tz - p.z) / dirLen) * travel;
+    this.grenades.push({
+      id: `g${++this.entityId}`, kind, x: p.x, z: p.z, y: 1.2,
+      tx, tz, vx: 0, vz: 0, fly: 0.75, ttl: def.fuse, team: p.team, owner: p.id,
+      radius: def.radius || 6,
+    });
+    this._emit('throw', { player: p.id, kind, x: r2(p.x), z: r2(p.z), tx: r2(tx), tz: r2(tz) });
+    return true;
+  }
+
+  _updateGrenades(dt) {
+    for (let i = this.grenades.length - 1; i >= 0; i--) {
+      const g = this.grenades[i];
+      if (g.fly > 0) {
+        g.fly = Math.max(0, g.fly - dt);
+        const k = 1 - g.fly / 0.75;
+        g.x = g.x + (g.tx - g.x) * Math.min(1, dt * 5);
+        g.z = g.z + (g.tz - g.z) * Math.min(1, dt * 5);
+        g.y = 1.2 + Math.sin(k * Math.PI) * 2.2;
+      } else {
+        g.y = Math.max(0.15, g.y - dt * 4);
       }
-      p.angle = i.aim;
-      const rescueNear = this.players.some(t => t.alive && t.downed && t.team === p.team && t.id !== p.id && distance(t, p) < 2.8 && clearLine(p, t));
-      const interactEdge = i.interact && !p.interactHeld;
-      if (!p.downed && interactEdge && !rescueNear) {
-        if (!this.openDrop(p)) this.vehicle(p);
-      }
-      p.interactHeld = i.interact;
-      const car = this.cars.find(c => c.id === p.car);
-      const driving = car && car.driver === p.id;
-      const speed = car ? (driving ? 22 : 0) : p.downed ? 2.2 : p.healTime || (i.interact && rescueNear) ? 0 : 7;
-      moveBody(p, i.mx * speed * dt, i.mz * speed * dt, car ? 1.35 : .55);
-      if (driving) {
-        car.x = p.x; car.z = p.z;
-        if (Math.hypot(i.mx, i.mz) > .1) car.angle = Math.atan2(i.mx, i.mz);
-        if (Math.hypot(i.mx, i.mz) > .6 && p.ramTimer === 0) {
-          const victim = this.players.find(t => t.alive && !t.downed && t.team !== p.team && t.id !== p.id && !t.car && distance(t, p) < 2);
-          if (victim) { this.damage(victim, 32, p); p.ramTimer = .8; }
+      g.ttl -= dt;
+      if (g.ttl > 0) continue;
+      this.grenades.splice(i, 1);
+      this._detonate(g);
+    }
+    for (let i = this.smokes.length - 1; i >= 0; i--) {
+      const s = this.smokes[i];
+      s.ttl -= dt;
+      if (s.ttl <= 0) { this.smokes.splice(i, 1); this._emit('smokeEnd', { id: s.id }); }
+    }
+    for (let i = this.fires.length - 1; i >= 0; i--) {
+      const f = this.fires[i];
+      f.ttl -= dt;
+      if (f.ttl <= 0) { this.fires.splice(i, 1); continue; }
+      f.tick = (f.tick || 0) + dt;
+      if (f.tick < 0.5) continue;
+      f.tick = 0;
+      for (let k = 0; k < this.players.length; k++) {
+        const q = this.players[k];
+        if (!q.alive || q.downed) continue;
+        if (dist(q.x, q.z, f.x, f.z) <= f.r) {
+          this.damage(q, THROWABLES.molotov.burn * 0.5, f.owner, { source: this._find(f.owner) });
         }
       }
-      if (!p.downed && i.fire && p.cooldown === 0 && p.ammo > 0 && !p.reloadTime && !p.healTime && !driving && !(rescueNear && i.interact)) this.shoot(p);
-      if (!p.downed && !car && !(rescueNear && i.interact)) this.pickup(p, interactEdge);
-      if (p.downed) {
-        p.bleedout = Math.max(0, p.bleedout - dt);
-        if (p.bleedout === 0) this.kill(p, this.players.find(k => k.id === p.downedBy), 'bleedout');
+    }
+  }
+
+  _detonate(g) {
+    const def = THROWABLES[g.kind];
+    if (!def) return;
+    const owner = this._find(g.owner);
+    if (g.kind === 'frag') {
+      const radius = def.radius || 8;
+      for (let i = 0; i < this.players.length; i++) {
+        const q = this.players[i];
+        if (!q.alive) continue;
+        const d = dist(q.x, q.z, g.x, g.z);
+        if (d > radius) continue;
+        const blocked = !this.world.clearLine({ x: g.x, z: g.z }, { x: q.x, z: q.z });
+        const falloff = Math.max(0.2, 1 - (d / (radius * 0.95)));
+        let dmg = def.damage * falloff * (blocked ? 0.45 : 1);
+        if (q.id === g.owner) dmg *= 0.5;
+        this.damage(q, dmg, g.owner, { source: owner, noDown: true });
       }
-      if (distance(p, this.zone) > this.zone.radius) this.damage(p, this.zone.damage * dt, null, 'storm');
-    }
-    this.syncPassengers();
-    this.updateRevives(dt);
-    this.updateWorldEvents(dt);
-    this.wipeDownedTeams();
-    const aliveTeams = this.livingTeams();
-    if (aliveTeams.length <= 1) this.end(aliveTeams[0] ?? null, 'squad');
-    else if (this.time > this.duration + 25) {
-      const ranked = aliveTeams.map(team => ({ team, players: this.players.filter(p => p.alive && p.team === team) })).sort((a, b) => this.teamScore(b.players) - this.teamScore(a.players));
-      for (const entry of ranked.slice(1)) for (const p of entry.players) this.kill(p, null, 'timeout');
-      this.end(ranked[0]?.team ?? null, 'timeout');
-    }
-  }
-
-  updateRevives(dt) {
-    const revivers = new Map();
-    for (const p of this.players) {
-      p.reviveTarget = null;
-      if (!p.alive || p.downed || p.car || !p.connected || !p.input.interact || p.input.fire || Math.hypot(p.input.mx, p.input.mz) > .12 || p.damagedAt === this.clock) continue;
-      const target = this.players.filter(t => t.alive && t.downed && t.team === p.team && distance(p, t) < 2.8 && clearLine(p, t)).sort((a, b) => distance(p, a) - distance(p, b))[0];
-      if (target) { p.reviveTarget = target.id; if (!revivers.has(target.id)) revivers.set(target.id, []); revivers.get(target.id).push(p); }
-    }
-    for (const p of this.players) {
-      if (!p.downed) { p.reviveProgress = 0; continue; }
-      const count = revivers.get(p.id)?.length || 0;
-      p.reviveProgress = count && p.damagedAt !== this.clock ? Math.min(REVIVE_TIME, p.reviveProgress + dt) : 0;
-      if (p.reviveProgress >= REVIVE_TIME) this.revive(p);
-    }
-  }
-
-  revive(p) {
-    p.downed = false; p.hp = 38; p.downedHp = 100; p.bleedout = 0; p.reviveProgress = 0; p.healTime = 0; p.reloadTime = 0; p.downedBy = null;
-    this.event('revive', { player: p.id, team: p.team, name: p.name });
-  }
-
-  wipeDownedTeams() {
-    for (const team of this.livingTeams()) {
-      const members = this.players.filter(p => p.team === team && p.alive);
-      if (members.length && members.every(p => p.downed)) {
-        for (const p of members) this.kill(p, this.players.find(k => k.id === p.downedBy), 'squad-wipe');
+      this._emit('explosion', { id: g.id, kind: 'frag', x: r2(g.x), z: r2(g.z), r: radius });
+    } else if (g.kind === 'smoke') {
+      this.smokes.push({
+        id: `s${++this.entityId}`, x: g.x, z: g.z, r: def.radius || 7, ttl: def.duration || 16,
+      });
+      this._emit('smoke', { id: `s${this.entityId}`, x: r2(g.x), z: r2(g.z), r: def.radius || 7 });
+    } else if (g.kind === 'flash') {
+      for (let i = 0; i < this.players.length; i++) {
+        const q = this.players[i];
+        if (!q.alive) continue;
+        const d = dist(q.x, q.z, g.x, g.z);
+        if (d > (def.radius || 10)) continue;
+        if (!this.world.clearLine({ x: g.x, z: g.z }, { x: q.x, z: q.z })) continue;
+        const facing = Math.abs(wrapAngle(Math.atan2(g.x - q.x, g.z - q.z) - q.angle));
+        const mul = facing < 1.1 ? 1 : 0.45;
+        q.blind = Math.max(q.blind, (def.blind || 2.6) * mul * (1 - d / (def.radius || 10) * 0.5));
       }
+      this._emit('flash', { id: g.id, x: r2(g.x), z: r2(g.z), r: def.radius || 10 });
+    } else if (g.kind === 'molotov') {
+      this.fires.push({
+        id: `f${++this.entityId}`, x: g.x, z: g.z, r: def.radius || 6,
+        ttl: def.duration || 9, owner: g.owner, tick: 0,
+      });
+      this._emit('fire', { id: `f${this.entityId}`, x: r2(g.x), z: r2(g.z), r: def.radius || 6 });
     }
   }
 
-  releaseSeat(p) {
-    if (!p.car) return;
-    const car = this.cars.find(c => c.id === p.car);
+  // ── 载具 ──────────────────────────────────────────────────────────────────
+  _carById(id) {
+    for (let i = 0; i < this.cars.length; i++) if (this.cars[i].id === id) return this.cars[i];
+    return null;
+  }
+
+  _nearestCar(p, range = 3.8) {
+    let best = null; let bestD = range;
+    for (let i = 0; i < this.cars.length; i++) {
+      const c = this.cars[i];
+      if (c.dead) continue;
+      const d = dist(p.x, p.z, c.x, c.z);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best;
+  }
+
+  _interact(p) {
+    p.interactCd = 0.35;
+    if (p.car != null) { this._exitCar(p, false); p.interactCd = 0.6; return; }
+    const car = this._nearestCar(p);
     if (car) {
-      car.seats = car.seats.map(id => id === p.id ? null : id);
-      if (car.driver === p.id) car.driver = car.seats.find(id => id) || null;
+      if (this._enterCar(p, car)) { p.interactCd = 0.6; return; }
     }
-    p.car = null;
+    for (let i = 0; i < this.loot.length; i++) {
+      const l = this.loot[i];
+      if (l.taken) continue;
+      if (dist(p.x, p.z, l.x, l.z) > 1.8) continue;
+      if (this._pickup(p, l)) { p.interactCd = 0.25; return; }
+    }
+    for (let i = 0; i < this.drops.length; i++) {
+      const d = this.drops[i];
+      if (d.opened || d.landsIn > 0) continue;
+      if (dist(p.x, p.z, d.x, d.z) > 2.6) continue;
+      this._openDrop(d, p);
+      p.interactCd = 0.6;
+      return;
+    }
   }
 
-  syncPassengers() {
-    for (const car of this.cars) {
-      for (const id of car.seats) {
-        const p = this.players.find(p => p.id === id);
-        if (p) { p.x = car.x; p.z = car.z; }
+  _pickup(p, l) {
+    if (l.kind === 'weapon') {
+      const slot = p.slot === 0 && !p.loadout[0] ? 0 : p.slot;
+      const idx = p.loadout[0] ? (p.loadout[1] ? slot : 1) : 0;
+      if (p.loadout[idx]) return false;
+      const w = getWeapon(l.item);
+      p.loadout[idx] = {
+        type: l.item, ammo: l.ammo ?? w.magazine,
+        attachments: Array.isArray(l.attachments) ? l.attachments.slice() : [], _eff: null,
+      };
+      l.taken = true;
+      this._emit('pickup', { player: p.id, item: l.item, kind: l.kind });
+      return true;
+    }
+    if (l.kind === 'ammo') {
+      const key = l.item;
+      if (!AMMO_TYPES[key]) return false;
+      const cap = Math.round(AMMO_TYPES[key].cap * (BACKPACKS[p.backpack]?.ammoCap || 1));
+      if ((p.mags[key] || 0) >= cap) return false;
+      p.mags[key] = Math.min(cap, (p.mags[key] || 0) + (l.qty || 12));
+      l.taken = true;
+      this._emit('pickup', { player: p.id, item: key, kind: 'ammo' });
+      return true;
+    }
+    if (l.kind === 'armor') {
+      const def = ARMORS[l.item];
+      if (!def || def.tier <= p.armorTier) return false;
+      p.armorTier = def.tier;
+      p.armor = def.durability;
+      l.taken = true;
+      this._emit('pickup', { player: p.id, item: l.item, kind: 'armor' });
+      return true;
+    }
+    if (l.kind === 'backpack') {
+      if (BACKPACKS[l.item]) p.backpack = l.item;
+      l.taken = true;
+      return true;
+    }
+    const qty = l.qty || 1;
+    if (l.kind === 'consumable') {
+      if (l.item === 'bandage') p.bandages = Math.min(24, p.bandages + qty);
+      else if (l.item === 'medkit' || l.item === 'med') p.meds = Math.min(12, p.meds + qty);
+      else if (l.item === 'energy') p.energy = Math.min(12, p.energy + qty);
+      else if (l.item === 'shield') p.shields = Math.min(9, p.shields + qty);
+      else return false;
+    } else if (l.kind === 'throwable') {
+      if (l.item === 'frag') p.grenades = Math.min(12, p.grenades + qty);
+      else if (l.item === 'smoke') p.smokes = Math.min(12, p.smokes + qty);
+      else if (l.item === 'flash') p.flashes = Math.min(9, p.flashes + qty);
+      else if (l.item === 'molotov') p.molotovs = Math.min(9, p.molotovs + qty);
+      else return false;
+    } else if (l.kind === 'attachment') {
+      const slot = p.loadout[p.slot];
+      if (!slot) return false;
+      const att = ATTACHMENTS[l.item];
+      if (!att) return false;
+      if (slot.attachments.length >= 4) return false;
+      slot.attachments.push(l.item);
+      slot._eff = null;
+    } else return false;
+    l.taken = true;
+    this._emit('pickup', { player: p.id, item: l.item, kind: l.kind });
+    return true;
+  }
+
+  _enterCar(p, car) {
+    const seats = car.seats | 0;
+    for (let s = 0; s < seats; s++) {
+      if (car.occupants[s] != null) continue;
+      const occ = this._find(car.occupants[s]);
+      if (occ) continue;
+    }
+    let seat = -1;
+    for (let s = 0; s < seats; s++) if (!car.occupants[s]) { seat = s; break; }
+    if (seat < 0) return false;
+    if (p.reloadTime > 0) { p.reloadTime = 0; }
+    if (p.healTime > 0) { p.healTime = 0; p.healKind = null; }
+    car.occupants[seat] = p.id;
+    p.car = car.id;
+    p.seat = seat;
+    p.state = 'vehicle';
+    p.x = car.x; p.z = car.z;
+    if (seat === 0) car.driver = p.id;
+    this._emit('vehicle', { action: 'enter', player: p.id, car: car.id, seat });
+    return true;
+  }
+
+  _exitCar(p, force) {
+    const car = p.car ? this._carById(p.car) : null;
+    if (!car) { p.car = null; p.seat = -1; p.state = 'normal'; return false; }
+    const seat = p.seat;
+    if (seat >= 0) car.occupants[seat] = null;
+    if (car.driver === p.id) {
+      car.driver = null;
+      for (let s = 0; s < car.seats; s++) {
+        const mate = car.occupants[s] ? this._find(car.occupants[s]) : null;
+        if (mate && mate.alive) { car.driver = mate.id; mate.seat = s; break; }
+      }
+    }
+    let ox = car.x + Math.sin(car.angle + Math.PI / 2) * 2.2;
+    let oz = car.z + Math.cos(car.angle + Math.PI / 2) * 2.2;
+    if (this.world.blocked(ox, oz, MOVE.radius)) {
+      ox = car.x - Math.sin(car.angle + Math.PI / 2) * 2.2;
+      oz = car.z - Math.cos(car.angle + Math.PI / 2) * 2.2;
+    }
+    if (!this.world.blocked(ox, oz, MOVE.radius)) { p.x = ox; p.z = oz; }
+    p.car = null; p.seat = -1;
+    p.state = 'normal';
+    this._emit('vehicle', { action: 'exit', player: p.id, car: car.id, seat, force: !!force });
+    return true;
+  }
+
+  /** 车内动作：下车 / 换枪 / 换弹 / 用药 / 购买（驾驶与射击在 _driveInput）。 */
+  _carActions(p) {
+    const inp = p.input;
+    if (inp.interact && p.interactCd <= 0) {
+      this._exitCar(p, false);
+      p.interactCd = 0.8;
+      return;
+    }
+    if (inp.slot >= 0 && inp.slot !== p.slot) this._swapSlot(p, inp.slot);
+    if (inp.swap) this._swapSlot(p, p.slot === 0 ? 1 : 0);
+    if (inp.reload && p.reloadTime <= 0) this.reload(p);
+    if (inp.buy || inp.upgrade) this._buy(p, inp.buy || inp.upgrade);
+  }
+
+  _driveInput(p, dt) {
+    const car = this._carById(p.car);
+    if (!car) { p.car = null; p.seat = -1; return; }
+    p.x = car.x; p.z = car.z;
+    if (Math.abs(p.input.aim) > 0.0001) p.angle = p.input.aim;
+    if (car.driver !== p.id) {
+      if (p.input.fire && p.fireCd <= 0) this.tryFireVehicle(p, car);
+      return;
+    }
+    const def = CARS[car.type] || CARS.jeep;
+    const throttle = clamp(p.input.mz, -1, 1);
+    const steer = clamp(p.input.mx, -1, 1);
+    car.speed += (throttle * def.speed - car.speed) * Math.min(1, dt * 3.2);
+    if (Math.abs(car.speed) < 0.05) car.speed = 0;
+    car.angle = wrapAngle(car.angle + steer * dt * (0.8 + Math.abs(car.speed) * 0.05));
+    const nx = car.x + Math.sin(car.angle) * car.speed * dt;
+    const nz = car.z + Math.cos(car.angle) * car.speed * dt;
+    if (this.world.blocked(nx, nz, 1.9)) { car.speed *= -0.25; }
+    else { car.x = nx; car.z = nz; }
+    for (let s = 0; s < car.seats; s++) {
+      const q = car.occupants[s] ? this._find(car.occupants[s]) : null;
+      if (q) { q.x = car.x; q.z = car.z; }
+    }
+    car.hitCd = Math.max(0, car.hitCd - dt);
+    if (Math.abs(car.speed) > 4 && car.hitCd <= 0) {
+      for (let i = 0; i < this.players.length; i++) {
+        const q = this.players[i];
+        if (!q.alive || q.car != null) continue;
+        if (car.occupants.includes(q.id)) continue;
+        if (dist(q.x, q.z, car.x, car.z) > 2.2) continue;
+        this.damage(q, Math.abs(car.speed) * 3.4, car.driver, {});
+        car.hitCd = 0.45;
+        this._emit('vehicle', { action: 'hit', car: car.id, player: q.id, speed: r2(car.speed) });
+      }
+      this._damageCar(car, Math.abs(car.speed) * 0.35, null);
+    }
+  }
+
+  tryFireVehicle(p, car) {
+    const weapon = effectiveWeapon(p);
+    if (!weapon || p.fireCd > 0) return false;
+    p.fireCd = weapon.interval;
+    p.spreadBloom = Math.min(2.4, p.spreadBloom + weapon.recoil * 0.11);
+    this._emit('shot', {
+      player: p.id, x: r2(p.x), z: r2(p.z),
+      tx: r2(p.x + Math.sin(p.angle) * 12), tz: r2(p.z + Math.cos(p.angle) * 12),
+      weapon: weapon.id, hit: false, vehicle: true,
+    });
+    return true;
+  }
+
+  _damageCar(car, amount, shooter) {
+    if (!car || car.dead || !(amount > 0)) return;
+    car.hp -= amount;
+    if (shooter) this._emit('vehicle', { action: 'damage', car: car.id, hp: r2(car.hp) });
+    if (car.hp <= 0) this._explodeCar(car, shooter);
+  }
+
+  _explodeCar(car, shooter) {
+    car.dead = true;
+    car.hp = 0;
+    car.speed = 0;
+    const riderIds = car.occupants.slice();
+    for (let s = 0; s < riderIds.length; s++) {
+      const q = riderIds[s] ? this._find(riderIds[s]) : null;
+      if (q) { this._exitCar(q, true); this.damage(q, 55, null, { noDown: true }); }
+    }
+    car.occupants.fill(null);
+    car.driver = null;
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (!q.alive || q.car != null) continue;
+      const d = dist(q.x, q.z, car.x, car.z);
+      if (d > 6) continue;
+      this.damage(q, 70 * (1 - d / 6), shooter ? shooter.id : null, { noDown: true });
+    }
+    this._emit('vehicle', { action: 'explode', car: car.id, x: r2(car.x), z: r2(car.z) });
+  }
+
+  _updateCars(dt) {
+    for (let i = 0; i < this.cars.length; i++) {
+      const c = this.cars[i];
+      if (c.dead) continue;
+      c.hitCd = Math.max(0, c.hitCd - dt);
+      if (c.driver) continue;
+      c.speed *= 0.92;
+      if (Math.abs(c.speed) < 0.05) c.speed = 0;
+    }
+  }
+
+  // ── 缩圈 / 空投 / 倒地救援 ────────────────────────────────────────────────
+  _updateZones(dt) {
+    const z = this.zone;
+    if (!z) return;
+    if (this.hordeMode || this.mode === 'training') {
+      this._applyZoneDamage(dt, 0);
+      return;
+    }
+    z.nextIn = Math.max(0, z.nextIn - dt);
+    const total = ZONE_FIRST_WAIT + ZONE_PHASES.reduce((a, p) => a + p.wait + p.shrink, 0);
+    if (!z.closing && z.nextIn <= 0) {
+      const idx = z.phase + 1;
+      if (idx < ZONE_PHASES.length) {
+        const phase = ZONE_PHASES[idx];
+        const worldR = this.world.radius || 182;
+        const nextR = Math.max(8, worldR * phase.ratio);
+        const room = Math.max(0, z.r - nextR) * 0.7;
+        const a = this.rng() * TAU;
+        z.phase = idx;
+        z.from = { x: z.x, z: z.z, r: z.r };
+        z.target = {
+          x: r2(clamp(z.x + Math.cos(a) * room, -worldR * 0.5, worldR * 0.5)),
+          z: r2(clamp(z.z + Math.sin(a) * room, -worldR * 0.5, worldR * 0.5)),
+          r: r2(nextR),
+        };
+        z.closing = true;
+        z.t = 0;
+        z.damage = phase.damage;
+        this._emit('zone', {
+          phase: idx, x: z.target.x, z: z.target.z, r: z.target.r,
+          damage: phase.damage, closing: true, wait: phase.wait, shrink: phase.shrink,
+        });
+      }
+    }
+    if (z.closing) {
+      const phase = ZONE_PHASES[z.phase] || ZONE_PHASES[ZONE_PHASES.length - 1];
+      const dur = Math.max(0.01, phase.shrink);
+      z.t = Math.min(dur, z.t + dt);
+      const k = z.t / dur;
+      const from = z.from || { x: z.x, z: z.z, r: z.r };
+      z.x = from.x + (z.target.x - from.x) * k;
+      z.z = from.z + (z.target.z - from.z) * k;
+      z.r = from.r + (z.target.r - from.r) * k;
+      z.nextIn = Math.max(0, dur - z.t) + (ZONE_PHASES[z.phase + 1]?.wait ?? 12);
+      if (z.t >= dur) {
+        z.x = z.target.x; z.z = z.target.z; z.r = z.target.r;
+        z.closing = false;
+        z.nextIn = ZONE_PHASES[z.phase + 1]?.wait ?? 12;
+        z.from = null;
+        this._emit('zone', { phase: z.phase, x: r2(z.x), z: r2(z.z), r: r2(z.r), closed: true });
+      }
+    }
+    z.totalTime = total;
+    const dmg = z.closing ? (ZONE_PHASES[z.phase]?.damage || 0) : (z.phase >= 0 ? (ZONE_PHASES[z.phase]?.damage || 0) : 0);
+    this._applyZoneDamage(dt, dmg);
+  }
+
+  _applyZoneDamage(dt, dmg) {
+    const z = this.zone;
+    if (!z) return;
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (!q.alive) continue;
+      if (dist(q.x, q.z, z.x, z.z) <= z.r) { q.zoneTick = 0; continue; }
+      if (!(dmg > 0)) continue;
+      q.zoneTick = (q.zoneTick || 0) + dt;
+      if (q.zoneTick < 1) continue;
+      q.zoneTick = 0;
+      this.damage(q, dmg, null, { noDown: true, zone: true });
+    }
+  }
+
+  _updateDrops(dt) {
+    if (this.phase === 'live' && this.dropsLeft > 0 && this.time >= this.nextDrop) {
+      this._spawnDrop();
+      this.dropsLeft--;
+      this.nextDrop = this.time + 75;
+    }
+    for (let i = 0; i < this.drops.length; i++) {
+      const d = this.drops[i];
+      if (d.landsIn > 0) {
+        d.landsIn = Math.max(0, d.landsIn - dt);
+        d.y = Math.max(0, 90 * (d.landsIn / 12));
+        if (d.landsIn <= 0) { d.y = 0; this._emit('dropLanded', { id: d.id, x: r2(d.x), z: r2(d.z) }); }
       }
     }
   }
 
-  swapWeapon(p) {
-    if (p.loadout.length < 2 || p.downed) return;
-    p.loadout[p.slot] = { type: p.weapon, ammo: p.ammo };
-    p.slot = (p.slot + 1) % p.loadout.length;
-    const weapon = p.loadout[p.slot]; p.weapon = weapon.type; p.ammo = weapon.ammo;
-    p.reloadTime = 0; p.healTime = 0; p.cooldown = Math.max(.2, p.cooldown);
+  _spawnDrop() {
+    const r = Math.max(20, (this.zone?.r || 160) * 0.7);
+    const a = this.rng() * TAU;
+    const rr = Math.sqrt(this.rng()) * r;
+    const x = (this.zone?.x || 0) + Math.cos(a) * rr;
+    const z = (this.zone?.z || 0) + Math.sin(a) * rr;
+    const drop = {
+      id: `d${++this.entityId}`, x, z, y: 90, landsIn: 12, opened: false, items: [],
+    };
+    this.drops.push(drop);
+    this._emit('drop', { id: drop.id, x: r2(x), z: r2(z) });
+    return drop;
   }
 
-  throwGrenade(p, smoke) {
-    const key = smoke ? 'smokes' : 'grenades';
-    if (!p.alive || p.downed || !p[key] || p.car || this.grenades.length >= 128) return;
-    p[key]--; p.healTime = 0;
-    this.grenades.push({ id: `g${++this.entityId}`, player: p.id, team: p.team, smoke, x: p.x, z: p.z, vx: Math.sin(p.input.aim) * 13, vz: Math.cos(p.input.aim) * 13, ttl: 2.1, height: .6 });
-    this.event('throw', { player: p.id, smoke });
+  _openDrop(drop, p) {
+    drop.opened = true;
+    const items = buildAirdropLoot(this.rng);
+    for (let i = 0; i < items.length && this.loot.length < MAX_LOOT; i++) {
+      const e = items[i];
+      const entry = this.addLoot(e.kind, e.item, drop.x + (this.rng() - 0.5) * 2.4,
+        drop.z + (this.rng() - 0.5) * 2.4, e);
+      if (entry) entry.drop = drop.id;
+    }
+    this._emit('dropOpen', { id: drop.id, player: p ? p.id : null });
+    return true;
   }
 
-  smokeBlocks(a, b) {
-    const dx = b.x - a.x, dz = b.z - a.z, length = dx * dx + dz * dz;
-    return this.smokes.some(s => {
-      const t = length ? clamp(((s.x - a.x) * dx + (s.z - a.z) * dz) / length, 0, 1) : 0;
-      return Math.hypot(a.x + t * dx - s.x, a.z + t * dz - s.z) < s.radius;
+  _updateDowned(p, dt) {
+    p.bleedout = Math.max(0, p.bleedout - dt);
+    p.state = 'downed';
+    const inp = p.input;
+    if (inp.mx * inp.mx + inp.mz * inp.mz > 0.0004) {
+      const len = Math.hypot(inp.mx, inp.mz);
+      this.world.moveBody(p, (inp.mx / len) * MOVE.downed * dt, (inp.mz / len) * MOVE.downed * dt, MOVE.radius);
+    }
+    if (inp.revive) this._tryRevive(p, dt);
+    if (p.bleedout <= 0) { this.kill(p, p.lastHitBy, 'bleedout'); return; }
+    if (p.reviveTarget) {
+      const helper = this._find(p.reviveTarget);
+      if (!helper || !helper.alive || !helper.input.revive) p.reviveProgress = 0;
+    }
+    // 队友（含 bot）自动救援
+    for (let i = 0; i < this.players.length; i++) {
+      const m = this.players[i];
+      if (!m.alive || m.downed || m.team !== p.team || m === p) continue;
+      if (m.id === p.id) continue;
+      if (dist(m.x, m.z, p.x, p.z) > REVIVE_RANGE) continue;
+      if (!m.input.revive && !m.bot) continue;
+      p.reviveTarget = m.id;
+      p.reviveProgress += dt;
+      if (p.reviveProgress >= REVIVE_TIME) {
+        this.revive(p);
+        p.reviveTarget = null;
+        this._emit('revived', { player: p.id, by: m.id });
+      }
+      break;
+    }
+  }
+
+  _tryRevive(p, dt) {
+    if (!p.alive || p.downed) return false;
+    let target = null; let bestD = REVIVE_RANGE;
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      if (!q.downed || q.team !== p.team || !q.alive) continue;
+      const d = dist(p.x, p.z, q.x, q.z);
+      if (d < bestD) { bestD = d; target = q; }
+    }
+    if (!target) return false;
+    if (p.moved) { target.reviveProgress = 0; return false; }
+    target.reviveTarget = p.id;
+    target.reviveProgress += dt;
+    if (target.reviveProgress >= REVIVE_TIME) {
+      this.revive(target);
+      this._emit('revived', { player: target.id, by: p.id });
+    }
+    return true;
+  }
+
+  _ping(p, kind) {
+    if (this.pings.length > 80) this.pings.shift();
+    p.pingCd = 1.2;
+    this.pings.push({
+      id: `p${++this.entityId}`, team: p.team,
+      x: p.x + Math.sin(p.angle) * 6, z: p.z + Math.cos(p.angle) * 6,
+      kind: PING_KINDS.includes(kind) ? kind : 'move', ttl: 6,
     });
   }
 
-  updateWorldEvents(dt) {
-    for (const g of this.grenades) {
-      g.ttl -= dt;
-      if (!blocked(g.x + g.vx * dt, g.z, .2)) g.x += g.vx * dt; else g.vx *= -.4;
-      if (!blocked(g.x, g.z + g.vz * dt, .2)) g.z += g.vz * dt; else g.vz *= -.4;
-      g.vx *= 1 - dt * 1.1; g.vz *= 1 - dt * 1.1;
-      g.height = .3 + Math.sin(clamp(1 - g.ttl / 2.1, 0, 1) * Math.PI) * 4;
-      if (g.ttl <= 0) {
-        if (g.smoke) this.smokes.push({ id: `s${++this.entityId}`, x: g.x, z: g.z, radius: 7, ttl: 16 });
-        else {
-          const attacker = this.players.find(p => p.id === g.player);
-          for (const target of this.players) if (target.alive && distance(target, g) < 8 && clearLine(g, target)) this.damage(target, 120 * (1 - distance(target, g) / 8), attacker, 'grenade');
-          this.event('explosion', { x: round(g.x), z: round(g.z) });
+  _updatePings(dt) {
+    for (let i = this.pings.length - 1; i >= 0; i--) {
+      this.pings[i].ttl -= dt;
+      if (this.pings[i].ttl <= 0) this.pings.splice(i, 1);
+    }
+  }
+
+  _checkEnd(dt) {
+    if (this.phase === 'ended') return;
+    if (this.pings.length) this._updatePings(dt);
+    if (this.hordeMode) return;
+    if (this.time >= this.duration) {
+      const teams = this._teamRanks();
+      this.end('timeout', teams.length ? teams[0].team : null);
+      return;
+    }
+    const alive = this._aliveTeamSet();
+    if (this.players.length > 1 && alive.size <= 1) {
+      this.end('lastTeam', alive.size ? [...alive][0] : null);
+    }
+  }
+
+  _teamRanks() {
+    const map = new Map();
+    for (let i = 0; i < this.players.length; i++) {
+      const q = this.players[i];
+      const cur = map.get(q.team);
+      const alive = q.alive || q.downed;
+      if (!cur) {
+        map.set(q.team, {
+          team: q.team, alive: alive ? 1 : 0, kills: q.kills, damage: q.damage,
+          members: [q.name], best: alive ? 2 : 1,
+        });
+      } else {
+        if (alive) cur.alive++;
+        cur.kills += q.kills; cur.damage += q.damage; cur.members.push(q.name);
+        if (alive) cur.best = Math.max(cur.best, 2);
+      }
+    }
+    const list = [...map.values()];
+    list.sort((a, b) => (b.alive - a.alive) || (b.kills - a.kills) || (b.damage - a.damage) || (a.team - b.team));
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      out.push({
+        team: e.team, rank: i + 1, name: this.teamName(e.team), alive: e.alive,
+        kills: e.kills, damage: r2(e.damage), players: e.members.slice(0, 8),
+      });
+    }
+    return out;
+  }
+
+  end(reason = 'lastTeam', winner = null) {
+    if (this.phase === 'ended') return false;
+    this.phase = 'ended';
+    this.time = Math.min(this.time, this.duration);
+    let winTeam = winner;
+    if (winTeam == null) {
+      const alive = this._aliveTeamSet();
+      winTeam = alive.size ? [...alive][0] : (this.players[0]?.team ?? null);
+    }
+    this.winnerTeam = winTeam;
+    this.resultReason = reason;
+    const ranks = this._teamRanks();
+    for (let i = 0; i < ranks.length; i++) {
+      const rk = ranks[i];
+      for (let k = 0; k < this.players.length; k++) {
+        const q = this.players[k];
+        if (q.team === rk.team) q.rank = rk.rank;
+      }
+    }
+    for (let i = 0; i < this.players.length; i++) {
+      if (!this.players[i].rank) this.players[i].rank = ranks.length + 1;
+    }
+    this.result = {
+      winnerTeam: winTeam, winnerName: this.teamName(winTeam), reason, ranks,
+      duration: r2(this.matchTime), players: this.players.length,
+    };
+    this._emit('end', { winnerTeam: winTeam, reason, ranks: ranks.slice(0, 8) });
+    return true;
+  }
+
+  spawnWave(n = 1, count = 6) {
+    if (!this.hordeRun) return 0;
+    return this._spawnEnemies(count, n);
+  }
+
+  // ── horde（PvE 波次） ─────────────────────────────────────────────────────
+  _startHorde() {
+    const spot = this.world.spawnAnchors[0] || { x: 0, z: 0 };
+    const base = { x: spot.x, z: spot.z, hp: HORDE.baseHp, maxHp: HORDE.baseHp, turrets: 0 };
+    this.hordeRun = {
+      wave: 0, totalWaves: HORDE.waves, prepTime: HORDE.prepTime, base,
+      score: 0, credits: 400, enemies: [], boss: false, bossSpawned: false,
+      nextWaveIn: HORDE.prepTime, kills: 0,
+    };
+    this.enemies = this.hordeRun.enemies;
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      p.loadout = [null, null];
+      this._applyLoadout(p, [{ type: 'ak12' }, { type: 'p9' }]);
+      p.mags = { light: 180, medium: 200, heavy: 60, shell: 30, bolt: 20 };
+      p.armorTier = 2; p.armor = ARMORS.armor2.durability;
+      p.shield = 100; p.meds = 3; p.bandages = 5; p.energy = 2; p.shields = 2;
+      p.grenades = 3; p.smokes = 1; p.flashes = 1; p.molotovs = 1;
+      this._spawnPlayer(p);
+      p.x = base.x + Math.cos(i * 1.1) * 4; p.z = base.z + Math.sin(i * 1.1) * 4;
+    }
+    this.phase = 'live';
+    this.time = 0; this.matchTime = 0;
+    this.zone = { x: base.x, z: base.z, r: 120, target: { x: base.x, z: base.z, r: 120 }, closing: false, damage: 0, phase: -1, nextIn: 0 };
+    this._emit('hordeStart', { waves: HORDE.waves, baseX: r2(base.x), baseZ: r2(base.z) });
+    return true;
+  }
+
+  _spawnEnemies(count, wave) {
+    const run = this.hordeRun;
+    if (!run) return 0;
+    const base = run.base;
+    const hpMul = Math.pow(HORDE.hpPerWave, Math.max(0, wave - 1));
+    const dmgMul = Math.pow(HORDE.dmgPerWave, Math.max(0, wave - 1));
+    let spawned = 0;
+    for (let i = 0; i < count; i++) {
+      const a = (i / Math.max(1, count)) * TAU + this.rng() * 0.5;
+      const rr = 34 + this.rng() * 12;
+      const x = base.x + Math.cos(a) * rr;
+      const z = base.z + Math.sin(a) * rr;
+      if (this.world.blocked(x, z, 0.7)) continue;
+      const boss = wave >= HORDE.bossWave && i === 0 && !run.bossSpawned;
+      const hp = (boss ? 1400 : 90) * hpMul;
+      run.enemies.push({
+        id: `e${++this.entityId}`, x, z, angle: Math.atan2(base.x - x, base.z - z),
+        hp, maxHp: hp, speed: boss ? 2.4 : 3.1 + Math.min(1.4, wave * 0.1),
+        damage: (boss ? 26 : 9) * dmgMul, attackCd: 0, boss, wave,
+      });
+      if (boss) { run.boss = true; run.bossSpawned = true; }
+      spawned++;
+    }
+    if (spawned) {
+      this._emit('wave', { wave, count: spawned, boss: run.bossSpawned });
+    }
+    return spawned;
+  }
+
+  _updateHorde(dt) {
+    const run = this.hordeRun;
+    if (!run || this.phase === 'ended') return;
+    if (run.nextWaveIn > 0) {
+      run.nextWaveIn = Math.max(0, run.nextWaveIn - dt);
+      run.prepTime = run.nextWaveIn;
+      if (run.nextWaveIn <= 0) {
+        run.wave++;
+        if (run.wave > run.totalWaves) { this.end('cleared', null); return; }
+        const count = HORDE.enemyStart + HORDE.enemyPerWave * (run.wave - 1);
+        this._spawnEnemies(count, run.wave);
+      }
+      return;
+    }
+    const base = run.base;
+    for (let i = run.enemies.length - 1; i >= 0; i--) {
+      const e = run.enemies[i];
+      if (e.hp <= 0) { run.enemies.splice(i, 1); continue; }
+      let target = null; let bestD = 1e9;
+      for (let k = 0; k < this.players.length; k++) {
+        const p = this.players[k];
+        if (!p.alive) continue;
+        const d = dist(e.x, e.z, p.x, p.z);
+        if (d < bestD) { bestD = d; target = p; }
+      }
+      const bd = dist(e.x, e.z, base.x, base.z);
+      if (!target || bd < bestD) {
+        if (bd > 2.4) {
+          const dx = (base.x - e.x) / bd; const dz = (base.z - e.z) / bd;
+          if (!this.world.blocked(e.x + dx * e.speed * dt, e.z + dz * e.speed * dt, 0.7)) {
+            e.x += dx * e.speed * dt; e.z += dz * e.speed * dt;
+          }
+          e.angle = Math.atan2(dx, dz);
+        } else {
+          e.attackCd -= dt;
+          if (e.attackCd <= 0) { e.attackCd = 1.1; base.hp = Math.max(0, base.hp - e.damage); }
+        }
+        continue;
+      }
+      const d = bestD;
+      if (d > 1.6) {
+        const dx = (target.x - e.x) / d; const dz = (target.z - e.z) / d;
+        e.x += dx * e.speed * dt; e.z += dz * e.speed * dt;
+        e.angle = Math.atan2(dx, dz);
+      } else {
+        e.attackCd -= dt;
+        if (e.attackCd <= 0) {
+          e.attackCd = e.boss ? 0.7 : 1.2;
+          this.damage(target, e.damage, null, { noDown: true });
+          if (!target.alive) run.score = Math.max(0, run.score - 25);
         }
       }
     }
-    this.grenades = this.grenades.filter(g => g.ttl > 0);
-    for (const s of this.smokes) s.ttl -= dt;
-    this.smokes = this.smokes.filter(s => s.ttl > 0);
-    for (const p of this.pings) p.ttl -= dt;
-    this.pings = this.pings.filter(p => p.ttl > 0);
-    for (const drop of this.drops) drop.landsIn = Math.max(0, drop.landsIn - dt);
-    if (this.time >= this.nextDrop && this.drops.length < 4) {
-      const position = this.freePosition(Math.max(8, this.zone.radius * .65));
-      this.drops.push({ id: `d${++this.entityId}`, ...position, landsIn: 12, opened: false });
-      this.nextDrop += 75; this.event('airdrop', position);
-    }
-  }
-
-  openDrop(p) {
-    const drop = this.drops.find(d => !d.opened && !d.landsIn && distance(d, p) < 3 && clearLine(d, p));
-    if (!drop) return false;
-    drop.opened = true;
-    for (const [i, type] of ['sniper', 'lmg', 'armor', 'med', 'ammo', 'grenade'].entries()) {
-      const position = { x: drop.x + Math.sin(i) * 1.4, z: drop.z + Math.cos(i) * 1.4 };
-      this.addLoot(type, blocked(position.x, position.z, .3) ? drop.x : position.x, blocked(position.x, position.z, .3) ? drop.z : position.z);
-    }
-    this.event('supply', { player: p.id }); return true;
-  }
-
-  vehicle(p) {
-    if (p.car) {
-      const car = this.cars.find(c => c.id === p.car);
-      for (const [x, z] of [[2.4, 0], [-2.4, 0], [0, 2.8], [0, -2.8]]) {
-        if (car && !blocked(p.x + x, p.z + z, .6) && clearLine(p, { x: p.x + x, z: p.z + z })) { this.releaseSeat(p); p.x += x; p.z += z; return; }
-      }
-    } else {
-      const car = this.cars.find(c => c.seats.includes(null) && c.hp > 0 && distance(c, p) < 3.8 && clearLine(p, c) && c.seats.every(id => !id || this.players.find(t => t.id === id)?.team === p.team));
-      if (car) { car.seats[car.seats.indexOf(null)] = p.id; car.driver ||= p.id; p.car = car.id; p.x = car.x; p.z = car.z; p.healTime = 0; }
-    }
-  }
-
-  pickup(p, explicit = false) {
-    for (let j = this.loot.length - 1; j >= 0; j--) {
-      const item = this.loot[j];
-      if (distance(p, item) > 1.7 || !clearLine(p, item)) continue;
-      let taken = false;
-      if (WEAPONS[item.type]) {
-        if (!p.loadout.some(w => w.type === item.type) && (p.loadout.length < 2 || explicit)) {
-          p.loadout[p.slot] = { type: p.weapon, ammo: p.ammo };
-          const next = { type: item.type, ammo: item.ammo ?? WEAPONS[item.type].magazine };
-          if (p.loadout.length < 2) { p.loadout.push(next); p.slot = p.loadout.length - 1; }
-          else { this.addLoot(p.weapon, p.x + .7, p.z, p.ammo); p.loadout[p.slot] = next; }
-          p.weapon = next.type; p.ammo = next.ammo; p.reloadTime = 0; taken = true; explicit = false;
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      if (!p.alive && p.connected) {
+        p.respawnIn = (p.respawnIn ?? HORDE.reviveAfter) - dt;
+        if (p.respawnIn <= 0) {
+          p.respawnIn = HORDE.reviveAfter;
+          this.revive(p);
+          p.hp = 70;
+          p.x = base.x + (this.rng() - 0.5) * 6;
+          p.z = base.z + (this.rng() - 0.5) * 6;
+          this._emit('respawn', { player: p.id });
         }
-      } else if (item.type === 'ammo' && p.reserve < 240) { p.reserve = Math.min(240, p.reserve + 45); taken = true; }
-      else if (item.type === 'med' && p.meds < 4) { p.meds++; taken = true; }
-      else if (item.type === 'armor' && p.armor < 65) { p.armor = 65; taken = true; }
-      else if (item.type === 'grenade' && p.grenades < 4) { p.grenades++; taken = true; }
-      else if (item.type === 'smoke' && p.smokes < 3) { p.smokes++; taken = true; }
-      if (taken) { this.loot.splice(j, 1); this.event('pickup', { player: p.id, item: item.type }); }
-    }
-  }
-
-  shoot(p) {
-    const w = WEAPONS[p.weapon]; p.ammo--; p.cooldown = w.interval;
-    for (let pellet = 0; pellet < (w.pellets || 1); pellet++) {
-      const angle = p.angle + (this.rng() - .5) * w.spread * 2, dx = Math.sin(angle), dz = Math.cos(angle);
-      let hit = null, range = wallDistance(p.x, p.z, dx, dz, w.range);
-      for (const target of this.players) {
-        if (target.id === p.id || !target.alive || target.team === p.team) continue;
-        const ox = target.x - p.x, oz = target.z - p.z, along = ox * dx + oz * dz, r = target.car ? 1.45 : .7;
-        const perpendicular = ox * ox + oz * oz - along * along;
-        if (perpendicular > r * r || along < 0) continue;
-        const near = Math.max(0, along - Math.sqrt(r * r - perpendicular));
-        if (near < range) { range = near; hit = target; }
       }
-      if (hit) this.damage(hit, w.damage, p);
-      this.event('shot', { player: p.id, x: round(p.x), z: round(p.z), tx: round(p.x + dx * range), tz: round(p.z + dz * range), hit: hit?.id || null });
+    }
+    if (base.hp <= 0) { this.end('baseDestroyed', null); return; }
+    if (run.wave >= run.totalWaves && run.enemies.length === 0 && run.nextWaveIn <= 0) {
+      run.nextWaveIn = HORDE.prepTime;
+      run.prepTime = HORDE.prepTime;
+      run.score += 500;
+      this.end('cleared', null);
     }
   }
 
-  damage(target, amount, attacker, reason = 'shot') {
-    if (!target?.alive) return;
-    if (attacker && attacker.team === target.team) return;
-    target.damagedAt = this.clock; target.healTime = 0;
-    if (target.downed) {
-      if (reason === 'shot' || reason === 'grenade') target.downedHp = Math.max(0, target.downedHp - amount * 1.4);
-      if (reason === 'storm') target.bleedout = Math.max(0, target.bleedout - amount * .35);
-      if (target.downedHp <= 0 || target.bleedout <= 0) this.kill(target, attacker, reason);
-      return;
-    }
-    if (reason === 'shot') {
-      if (target.car) {
-        const car = this.cars.find(c => c.id === target.car); if (car) car.hp -= amount;
-        amount *= .3;
-        if (car?.hp <= 0) { car.hp = 0; const passengers = this.players.filter(p => p.car === car.id); for (const p of passengers) this.releaseSeat(p); amount += 30; this.event('explosion', { x: car.x, z: car.z }); }
+  /** 前方扇形内是否有敌人（horde 用，供伤害判定/测试）。 */
+  hordeShot(p, damage = 20, range = 40) {
+    const run = this.hordeRun;
+    if (!run) return 0;
+    let killed = 0;
+    for (let i = 0; i < run.enemies.length; i++) {
+      const e = run.enemies[i];
+      const d = dist(p.x, p.z, e.x, e.z);
+      if (d > range) continue;
+      const a = Math.abs(wrapAngle(Math.atan2(e.x - p.x, e.z - p.z) - p.angle));
+      if (a > 0.5) continue;
+      e.hp -= damage;
+      if (e.hp <= 0) {
+        killed++;
+        run.score += e.boss ? 500 : 25;
+        run.credits += e.boss ? 300 : 18;
+        run.kills++;
+        this._emit('enemyDown', { id: e.id, boss: e.boss, wave: run.wave });
       }
-      const absorbed = Math.min(target.armor, amount * .6); target.armor -= absorbed; amount -= absorbed; target.healTime = 0;
+      break;
     }
-    target.hp = Math.max(0, target.hp - amount);
-    if (target.hp <= 0) this.down(target, attacker, reason);
+    if (run.enemies.length && run.enemies.every((e) => e.hp <= 0)) {
+      run.nextWaveIn = HORDE.prepTime;
+      run.prepTime = HORDE.prepTime;
+      run.score += 100 + run.wave * 25;
+      run.credits += 120 + run.wave * 30;
+      this._emit('waveClear', { wave: run.wave });
+    }
+    return killed;
   }
 
-  down(p, attacker, reason) {
-    if (!p.alive || p.downed) return;
-    if (!this.players.some(t => t.id !== p.id && t.team === p.team && t.alive && !t.downed)) { this.kill(p, attacker, reason); return; }
-    p.downed = true; p.hp = 1; p.downedHp = 100; p.bleedout = BLEEDOUT_TIME; p.healTime = 0; p.reloadTime = 0;
-    p.downedBy = attacker?.id || null;
-    this.releaseSeat(p);
-    this.event('down', { player: p.id, team: p.team, attacker: attacker?.id || null, name: p.name, attackerName: attacker?.name || '信号风暴', reason });
+  upgradeCost(kind) {
+    const def = HORDE.upgrades[kind];
+    if (!def) return Infinity;
+    const run = this.hordeRun;
+    const bought = run ? run.upgradesBought?.[kind] || 0 : 0;
+    return def.baseCost + def.step * bought;
   }
 
-  kill(p, attacker, reason) {
-    if (!p.alive) return;
-    const teamRank = this.livingTeams().length;
-    p.rank = 0;
-    p.survived = this.time; p.alive = false; p.downed = false; p.hp = 0; p.healTime = 0; p.reloadTime = 0; p.reviveProgress = 0;
-    this.releaseSeat(p);
-    if (!this.players.some(t => t.team === p.team && t.alive)) {
-      this.teamRanks.set(p.team, teamRank);
-      for (const member of this.players.filter(t => t.team === p.team)) member.rank = teamRank;
+  _buy(p, kind) {
+    const run = this.hordeRun;
+    if (!run || !HORDE.upgrades[kind]) return false;
+    const cost = this.upgradeCost(kind);
+    if (run.credits < cost) return false;
+    run.credits -= cost;
+    run.upgradesBought = run.upgradesBought || {};
+    run.upgradesBought[kind] = (run.upgradesBought[kind] || 0) + 1;
+    if (kind === 'repair') run.base.hp = Math.min(run.base.maxHp, run.base.hp + run.base.maxHp * 0.3);
+    else if (kind === 'ammo') {
+      for (let i = 0; i < this.players.length; i++) {
+        const q = this.players[i];
+        q.mags = { light: 240, medium: 240, heavy: 90, shell: 48, bolt: 30 };
+        q.meds = Math.max(q.meds, 3); q.bandages = Math.max(q.bandages, 5);
+        q.grenades = Math.max(q.grenades, 3); q.smokes = Math.max(q.smokes, 2);
+      }
+    } else if (kind === 'armor') {
+      for (let i = 0; i < this.players.length; i++) {
+        const q = this.players[i];
+        q.armorTier = Math.min(3, Math.max(q.armorTier || 1, (q.armorTier || 0) + 1));
+        q.armor = armorForTier(q.armorTier)?.durability || 60;
+      }
+    } else if (kind === 'turret') {
+      run.base.turrets = Math.min(HORDE.upgrades.turret.max || 4, (run.base.turrets || 0) + 1);
     }
-    if (attacker && attacker !== p) attacker.kills++;
-    this.addLoot('ammo', p.x, p.z);
-    p.loadout[p.slot] = { type: p.weapon, ammo: p.ammo };
-    for (const weapon of p.loadout) if (weapon.type !== 'pistol') this.addLoot(weapon.type, p.x + .4, p.z + .4, weapon.ammo);
-    this.event('kill', { player: p.id, team: p.team, attacker: attacker?.id || null, reason, name: p.name, attackerName: attacker?.name || '信号风暴' });
+    this._emit('upgrade', { player: p ? p.id : null, kind, cost });
+    return true;
   }
 
-  livingTeams() { return [...new Set(this.players.filter(p => p.alive).map(p => p.team))].sort((a, b) => a - b); }
-  teamScore(players) { return players.reduce((sum, p) => sum + (p.hp + p.armor * .25) + p.kills * 30, 0); }
-  teamSummary() {
-    return Array.from({ length: this.maxTeams }, (_, team) => {
-      const members = this.players.filter(p => p.team === team);
-      return { team, name: teamName(team), alive: members.filter(p => p.alive).length, humans: members.filter(p => !p.bot).length, members: members.length };
-    }).filter(t => t.members);
+  // ── Bot 与快照 ────────────────────────────────────────────────────────────
+  _bots(dt) {
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      if (!p.bot || !p.alive) continue;
+      if (p.seat === 0 && p.car == null) continue;
+      try {
+        thinkBot(this, p, dt);
+      } catch (err) {
+        p.think = p.think || { err: 0 };
+      }
+      if (p.botInput) {
+        p.input = sanitizeInput(p.botInput);
+        p.botInput = null;
+      }
+      if (p.car == null) this._movePlayer(p, dt);
+      this._handleActions(p, dt);
+    }
   }
 
-  end(winnerTeam, reason) {
-    this.phase = 'ended'; this.winnerTeam = winnerTeam; this.resultReason = reason;
-    const winner = this.players.find(p => p.team === winnerTeam && p.alive);
-    this.winner = winner?.id ?? null;
-    for (const p of this.players) if (p.team === winnerTeam) p.rank = 1;
-    this.event('end', { winner: this.winner, winnerTeam, reason });
+  teamName(team) {
+    return TEAM_NAMES[team] || `小队 ${team + 1}`;
   }
 
-  botInput(p, dt) {
-    p.botTimer -= dt;
-    if (p.botTimer > 0) return;
-    p.botTimer = .24 + this.rng() * .22;
-    if (p.downed) {
-      const safe = distance(p, this.zone) > this.zone.radius - 4;
-      const a = safe ? Math.atan2(this.zone.x - p.x, this.zone.z - p.z) : this.time * .12 + p.team;
-      p.input = { ...emptyInput(), mx: Math.sin(a) * .6, mz: Math.cos(a) * .6, aim: a };
-      return;
-    }
-    const teammate = this.players.filter(t => t.alive && t.downed && t.team === p.team && distance(t, p) < 24).sort((a, b) => distance(a, p) - distance(b, p))[0];
-    if (teammate && clearLine(p, teammate)) {
-      const a = Math.atan2(teammate.x - p.x, teammate.z - p.z);
-      const close = distance(p, teammate) < 2.4;
-      p.input = { ...emptyInput(), mx: close ? 0 : Math.sin(a) * .7, mz: close ? 0 : Math.cos(a) * .7, aim: a, interact: close };
-      return;
-    }
-    const target = this.players.filter(t => t.alive && !t.downed && t.id !== p.id && t.team !== p.team && distance(t, p) < Math.min(WEAPONS[p.weapon].range, 58))
-      .sort((a, b) => distance(a, p) - distance(b, p)).find(t => clearLine(p, t) && !this.smokeBlocks(p, t));
-    const outside = distance(p, this.zone) > this.zone.radius - 9;
-    let dest;
-    if (outside) dest = this.zone;
-    else if (target) dest = target;
-    else {
-      dest = this.loot.filter(l => (p.weapon === 'pistol' && WEAPONS[l.type]) || (l.type === 'armor' && p.armor < 30) || (l.type === 'ammo' && p.reserve < 50)).sort((a, b) => distance(a, p) - distance(b, p))[0];
-      if (!dest || distance(p, dest) > 25) dest = { x: Math.sin(this.time * .04 + p.team) * this.zone.radius * .5, z: Math.cos(this.time * .04 + p.team) * this.zone.radius * .5 };
-    }
-    const a = Math.atan2(dest.x - p.x, dest.z - p.z);
-    let mx = Math.sin(a), mz = Math.cos(a);
-    if (target && !outside && distance(target, p) < 13) { mx = Math.cos(a) * .6; mz = -Math.sin(a) * .6; }
-    for (const offset of [0, .7, -.7, 1.4, -1.4, 2.1, -2.1, Math.PI]) {
-      const dx = mx * Math.cos(offset) - mz * Math.sin(offset), dz = mx * Math.sin(offset) + mz * Math.cos(offset);
-      if (!blocked(p.x + dx * 2, p.z + dz * 2, .6)) { mx = dx; mz = dz; break; }
-    }
-    const heal = p.hp < 45 && p.meds > 0 && !target && !outside;
-    p.input = { ...emptyInput(), mx: heal ? 0 : mx * .72, mz: heal ? 0 : mz * .72,
-      aim: target ? Math.atan2(target.x - p.x, target.z - p.z) + (this.rng() - .5) * .34 : a,
-      fire: !!target && this.time > 12 && this.rng() > .2, heal, reload: p.ammo === 0 };
+  _visibleTo(viewer, target) {
+    if (!target) return false;
+    if (!viewer) return true;
+    if (viewer.team === target.team) return true;
+    return dist(viewer.x, viewer.z, target.x, target.z) <= 70;
   }
 
-  snapshot(viewerId = null, sinceEvent = 0) {
-    const viewer = this.players.find(p => p.id === viewerId);
-    const followed = viewer && !viewer.alive ? this.players.find(p => p.alive && p.team === viewer.team) || this.players.find(p => p.alive) || viewer : viewer;
-    const visible = p => !followed || p.id === viewer.id || p.team === viewer.team || distance(p, followed) < 70;
+  _playerView(p, self) {
+    const weapon = effectiveWeapon(p);
     return {
-      mode: this.mode, teamSize: this.teamSize, totalPlayers: this.players.length, aliveCount: this.players.filter(p => p.alive).length, phase: this.phase, time: round(this.time), duration: this.duration,
-      winner: this.winner, winnerTeam: this.winnerTeam, resultReason: this.resultReason,
-      zone: { x: this.zone.x, z: this.zone.z, radius: round(this.zone.radius), next: round(this.zone.next), damage: round(this.zone.damage) }, teamSummary: this.teamSummary(),
-      players: this.players.filter(visible).map(p => ({
-        id: p.id, name: p.name, bot: p.bot, human: p.human, team: p.team, squad: p.squad, teamName: p.teamName,
-        x: round(p.x), z: round(p.z), angle: round(p.angle), hp: round(p.hp), armor: round(p.armor), alive: p.alive,
-        downed: p.downed, downedHp: round(p.downedHp), bleedout: round(p.bleedout), reviveProgress: round(p.reviveProgress), reviveTarget: p.reviveTarget,
-        kills: p.kills, rank: p.rank, weapon: p.weapon, ammo: p.ammo, reserve: p.reserve, meds: p.meds, car: p.car,
-        slot: p.slot, loadout: p.loadout.map((w, i) => ({ type: w.type, ammo: i === p.slot ? p.ammo : w.ammo })), grenades: p.grenades, smokes: p.smokes,
-        reloadTime: round(p.reloadTime), healTime: round(p.healTime), air: round(p.air), connected: p.connected, seq: p.inputSeq, survived: round(p.survived),
-      })),
-      loot: this.loot.filter(visible).map(l => ({ ...l, x: round(l.x), z: round(l.z) })), cars: this.cars.map(c => ({ ...c, x: round(c.x), z: round(c.z), angle: round(c.angle), hp: round(c.hp), seats: [...c.seats] })),
-      events: this.events.filter(e => e.id > sinceEvent && (e.type !== 'shot' || !followed || distance(e, followed) < 90)).map(e => ({ ...e })),
-      grenades: this.grenades.filter(visible).map(g => ({ id:g.id, x:round(g.x), z:round(g.z), smoke:g.smoke, height:round(g.height), ttl:round(g.ttl) })),
-      smokes: this.smokes.filter(visible).map(s => ({ ...s, x:round(s.x), z:round(s.z), ttl:round(s.ttl) })),
-      pings: this.pings.filter(p => !viewer || p.team === viewer.team).map(p => ({ ...p, x:round(p.x), z:round(p.z), ttl:round(p.ttl) })),
-      drops: this.drops.map(d => ({ ...d, x:round(d.x), z:round(d.z), landsIn:round(d.landsIn) })),
+      id: p.id, name: p.name, bot: p.bot, team: p.team, teamName: this.teamName(p.team),
+      x: r2(p.x), z: r2(p.z), angle: r2(p.angle), y: r2(p.y), hp: r2(p.hp),
+      armor: r2(p.armor), armorTier: p.armorTier, alive: p.alive, downed: p.downed,
+      bleedout: r2(p.bleedout), reviveProgress: r2(p.reviveProgress), reviveTarget: p.reviveTarget,
+      weapon: weapon ? weapon.id : null, kills: p.kills, rank: p.rank,
+      car: p.car, seat: p.seat, connected: p.connected, state: p.state, chute: p.chute,
     };
   }
+
+  snapshot(viewerId = null, sinceEventId = 0) {
+    const self = viewerId ? this._find(viewerId) : null;
+    const vx = self ? self.x : 0;
+    const vz = self ? self.z : 0;
+    const players = [];
+    const teammates = [];
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      const isMate = self ? p.team === self.team : false;
+      if (!this._visibleTo(self, p)) continue;
+      players.push(this._playerView(p, self));
+      if (self && isMate) {
+        teammates.push({
+          id: p.id, name: p.name, x: r2(p.x), z: r2(p.z), alive: p.alive, downed: p.downed,
+          hp: r2(p.hp), bleedout: r2(p.bleedout), car: p.car, connected: p.connected,
+          isSelf: p === self,
+        });
+      }
+    }
+    const loot = [];
+    for (let i = 0; i < this.loot.length; i++) {
+      const l = this.loot[i];
+      if (l.taken) continue;
+      if (self && !self.bot && dist(vx, vz, l.x, l.z) > 70) continue;
+      loot.push({
+        id: l.id, kind: l.kind, item: l.item, x: r2(l.x), z: r2(l.z), y: r2(l.y),
+        qty: l.qty, ammo: l.ammo, rarity: l.rarity, attachments: l.attachments.slice(),
+      });
+    }
+    const cars = [];
+    for (let i = 0; i < this.cars.length; i++) {
+      const c = this.cars[i];
+      if (c.dead) continue;
+      cars.push({
+        id: c.id, type: c.type, x: r2(c.x), z: r2(c.z), angle: r2(c.angle), hp: r2(c.hp),
+        maxHp: c.maxHp, color: c.color, seats: c.seats, driver: c.driver, speed: r2(c.speed),
+      });
+    }
+    const events = [];
+    for (let i = this.events.length - 1; i >= 0 && events.length < MAX_EVENTS; i--) {
+      if (this.events[i].id > sinceEventId) events.push({ ...this.events[i] });
+    }
+    events.reverse();
+    let alive = 0; let humans = 0; let bots = 0;
+    const teamSet = new Set();
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i];
+      if (p.alive) alive++;
+      if (p.bot) bots++; else humans++;
+      if (p.alive || p.downed) teamSet.add(p.team);
+    }
+    const me = self ? this._selfView(self) : null;
+    return {
+      v: 3, mode: this.mode, mapId: this.mapId, mapName: this.mapName,
+      weather: this.weather, timeOfDay: this.timeOfDay,
+      phase: this.phase, time: r2(this.time), matchTime: r2(this.matchTime), duration: this.duration,
+      zone: this._zoneView(),
+      counts: {
+        alive, total: this.players.length, teams: this.maxTeams,
+        aliveTeams: teamSet.size, humans, bots,
+      },
+      selfId: self ? self.id : null,
+      me,
+      players, loot, cars,
+      grenades: this.grenades.map((g) => ({
+        id: g.id, kind: g.kind, x: r2(g.x), z: r2(g.z), y: r2(g.y), ttl: r2(g.ttl),
+      })),
+      smokes: this.smokes.map((s) => ({ id: s.id, x: r2(s.x), z: r2(s.z), r: s.r, ttl: r2(s.ttl) })),
+      fires: this.fires.map((f) => ({ id: f.id, x: r2(f.x), z: r2(f.z), r: f.r, ttl: r2(f.ttl) })),
+      pings: this.pings
+        .filter((pg) => !self || pg.team === self.team)
+        .map((pg) => ({ id: pg.id, team: pg.team, x: r2(pg.x), z: r2(pg.z), kind: pg.kind, ttl: r2(pg.ttl) })),
+      drops: this.drops.map((d) => ({
+        id: d.id, x: r2(d.x), z: r2(d.z), y: r2(d.y), landsIn: r2(d.landsIn), opened: d.opened,
+      })),
+      markers: [],
+      horde: this._hordeView(),
+      events,
+      loading: null,
+      result: this.result ? {
+        winnerTeam: this.result.winnerTeam, winnerName: this.result.winnerName,
+        reason: this.result.reason,
+        ranks: this.result.ranks.map((rk) => ({ ...rk, players: rk.players.slice() })),
+      } : null,
+      teammates,
+    };
+  }
+
+  _zoneView() {
+    const z = this.zone;
+    if (!z) return { x: 0, z: 0, r: 0, target: { x: 0, z: 0, r: 0 }, closing: false, damage: 0, phase: 0, nextIn: 0 };
+    return {
+      x: r2(z.x), z: r2(z.z), r: r2(z.r),
+      target: { x: r2(z.target.x), z: r2(z.target.z), r: r2(z.target.r) },
+      closing: z.closing, damage: z.damage, phase: z.phase, nextIn: r2(z.nextIn),
+    };
+  }
+
+  _hordeView() {
+    const run = this.hordeRun;
+    if (!run) return null;
+    const enemiesLeft = run.enemies.length + (run.nextWaveIn > 0
+      ? (HORDE.enemyStart + HORDE.enemyPerWave * Math.max(0, run.wave)) : 0);
+    return {
+      wave: run.wave, totalWaves: run.totalWaves, enemiesLeft, nextWaveIn: r2(run.nextWaveIn),
+      boss: run.boss, score: run.score, baseHp: r2(Math.max(0, run.base.hp)),
+      baseMaxHp: run.base.maxHp, prepTime: HORDE.prepTime, cost: r2(run.credits),
+    };
+  }
+
+  _selfView(p) {
+    const weapon = effectiveWeapon(p);
+    const slot = p.loadout[p.slot];
+    const loadout = [];
+    for (let i = 0; i < p.loadout.length; i++) {
+      const s = p.loadout[i];
+      loadout.push(s ? { type: s.type, ammo: s.ammo, attachments: s.attachments.slice() } : null);
+    }
+    let interactLabel = null;
+    if (p.car == null) {
+      const car = this._nearestCar(p);
+      if (car) interactLabel = `驾驶 ${CARS[car.type]?.name || '载具'}`;
+    } else interactLabel = '下车';
+    if (!interactLabel) {
+      for (let i = 0; i < this.loot.length; i++) {
+        const l = this.loot[i];
+        if (!l.taken && dist(p.x, p.z, l.x, l.z) <= 1.8) { interactLabel = '拾取 物资'; break; }
+      }
+    }
+    if (!interactLabel) {
+      for (let i = 0; i < this.drops.length; i++) {
+        const d = this.drops[i];
+        if (!d.opened && d.landsIn <= 0 && dist(p.x, p.z, d.x, d.z) <= 2.6) {
+          interactLabel = '开启 空投'; break;
+        }
+      }
+    }
+    if (!interactLabel && weapon) interactLabel = p.mags[weapon.ammo] > 0 ? '换弹' : null;
+    const dist0 = 0;
+    return {
+      id: p.id, name: p.name, bot: p.bot, team: p.team, teamName: this.teamName(p.team),
+      hp: r2(p.hp), armor: r2(p.armor), armorTier: p.armorTier, shield: r2(p.shield),
+      alive: p.alive, downed: p.downed, downedHp: r2(p.downedHp), bleedout: r2(p.bleedout),
+      reviveProgress: r2(p.reviveProgress), reviveTarget: p.reviveTarget,
+      kills: p.kills, assists: p.assists, damage: r2(p.damage), rank: p.rank,
+      state: p.state, x: r2(p.x), z: r2(p.z), angle: r2(p.angle), stamina: r2(p.stamina),
+      weapon: weapon ? weapon.id : null,
+      ammo: slot ? slot.ammo : 0,
+      reserve: weapon ? (p.mags[weapon.ammo] || 0) : 0,
+      ammoType: weapon ? weapon.ammo : null,
+      slot: p.slot, loadout,
+      mags: { ...p.mags }, meds: p.meds, bandages: p.bandages, energy: p.energy,
+      shields: p.shields, grenades: p.grenades, smokes: p.smokes, flashes: p.flashes,
+      molotovs: p.molotovs, car: p.car, seat: p.seat, interactLabel,
+      blind: r2(p.blind), reloadTime: r2(p.reloadTime), healTime: r2(p.healTime),
+      healKind: p.healKind, fireCooldown: r2(p.fireCd),
+      accuracy: r2(weapon ? Math.max(0.05, 1 - weapon.spread / Math.max(0.01, weapon.spread) * 0.95) : 0),
+    };
+  }
+}
+
+// ── 世界构造（makeWorld 未就绪时的兜底，保证测试与服务器能跑） ─────────────
+export function createWorld(mapId = 'qinglan') {
+  let world = null;
+  try {
+    if (typeof mapgen.makeWorld === 'function') world = mapgen.makeWorld(mapId);
+  } catch (err) { world = null; }
+  if (!world || typeof world.blocked !== 'function' || typeof world.moveBody !== 'function') {
+    world = fallbackWorld(mapId);
+  }
+  return normalizeWorld(world, mapId);
+}
+
+function normalizeWorld(world, mapId) {
+  const def = getMapDef(mapId) || getMapDef('qinglan');
+  const radius = Number.isFinite(world.radius) ? world.radius : (def?.radius || 182);
+  world.radius = radius;
+  world.regions = Array.isArray(world.regions) ? world.regions : [];
+  world.lootSpots = Array.isArray(world.lootSpots) ? world.lootSpots : [];
+  world.carSpots = Array.isArray(world.carSpots) ? world.carSpots : [];
+  world.spawnAnchors = Array.isArray(world.spawnAnchors) && world.spawnAnchors.length
+    ? world.spawnAnchors : makeAnchors(radius);
+  world.inWater = typeof world.inWater === 'function' ? world.inWater : () => false;
+  if (!world.nav || typeof world.nav !== 'object') {
+    world.nav = { pathClear: world.clearLine, nearestWalkable: (x, z) => ({ x, z }) };
+  }
+  if (typeof world.nav.pathClear !== 'function') world.nav.pathClear = world.clearLine;
+  if (typeof world.nav.nearestWalkable !== 'function') world.nav.nearestWalkable = (x, z) => ({ x, z });
+  return world;
+}
+
+function makeAnchors(radius) {
+  const out = [];
+  const r = radius * 0.72;
+  for (let i = 0; i < 48; i++) {
+    const a = (i / 48) * TAU + (i % 3) * 0.11;
+    const rr = r * (0.45 + 0.55 * ((i * 37) % 100) / 100);
+    out.push({ x: Math.cos(a) * rr, z: Math.sin(a) * rr });
+  }
+  return out;
+}
+
+/** 极简兜底世界：只有边界与少量方形障碍，用于 makeWorld 尚未就绪的场景。 */
+export function fallbackWorld(mapId = 'qinglan') {
+  const def = getMapDef(mapId) || getMapDef('qinglan');
+  const radius = def?.radius || 182;
+  const obstacles = [];
+  const rng = mapgen.mulberry32((def?.seed || 74129) >>> 0);
+  for (let i = 0; i < 60; i++) {
+    const a = rng() * TAU;
+    const rr = Math.sqrt(rng()) * (radius - 24);
+    obstacles.push({
+      x: Math.cos(a) * rr, z: Math.sin(a) * rr,
+      w: 6 + rng() * 12, d: 6 + rng() * 12, h: 4, kind: 'building',
+    });
+  }
+  const collision = mapgen.makeCollision(obstacles, (x, z) => Math.hypot(x, z) < radius - 1);
+  const lootSpots = [];
+  const carSpots = [];
+  for (let i = 0; i < 120; i++) {
+    const a = rng() * TAU;
+    const rr = Math.sqrt(rng()) * (radius - 26);
+    lootSpots.push({ x: Math.cos(a) * rr, z: Math.sin(a) * rr, tier: 1 + ((i * 7) % 3) });
+  }
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * TAU;
+    carSpots.push({
+      x: Math.cos(a) * radius * 0.62, z: Math.sin(a) * radius * 0.62,
+      type: CAR_TYPES[i % CAR_TYPES.length], rot: a,
+    });
+  }
+  return {
+    ...collision, radius, obstacles, mapId: def?.id || mapId,
+    lootSpots, carSpots, spawnAnchors: makeAnchors(radius), regions: [],
+  };
 }
