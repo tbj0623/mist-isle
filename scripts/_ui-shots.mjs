@@ -92,7 +92,7 @@ await page.screenshot({ path: resolve(outDir, 'dialog-room.png') });
 await page.evaluate(() => { window.__ui.screens.hideRoom(); window.__ui.screens.showResult({ won: true, placement: 1, totalTeams: 16, mode: 'squad', mapId: 'qinglan', kills: 7, damage: 942, survived: 372, revives: 2, shotsFired: 121, shotsHit: 68 }, { xp: 386, credits: 214, ratingDelta: 28, levelUp: true, newLevel: 13, missionsCompleted: [{ title: '清除 10 名敌人' }], achievementsCompleted: [{ title: '百人斩' }] }); });
 await page.waitForTimeout(100);
 await page.screenshot({ path: resolve(outDir, 'dialog-result.png') });
-await page.evaluate(() => { window.__ui.screens.hideResult(); window.__ui.hud.initHud(window.__app); window.__ui.hud.showHud(true); });
+await page.evaluate(() => { window.__ui.screens.hideResult(); window.__ui.screens.closeScreens(); window.__ui.hud.initHud(window.__app); window.__ui.hud.showHud(true); });
 const state = await page.evaluate(() => {
   const players = [
     { id: 'me', name: '旅人', team: 0, teamName: '曙光小队', hp: 68, armor: 92, alive: true, downed: false, kills: 4, x: 10, z: 12, angle: 0.6, weapon: 'ar7', ammo: 21, reserve: 120, slot: 0, stamina: 54, bandages: 3, meds: 1, energy: 2, shields: 1, grenades: 2, smokes: 1, flashes: 1, molotovs: 0 },
@@ -119,7 +119,7 @@ await page.waitForTimeout(150);
 await page.screenshot({ path: resolve(outDir, 'hud-fullmap.png') });
 
 const mobile = await setup(844, 390);
-await mobile.evaluate(() => window.__ui.hud.initHud(window.__app));
+await mobile.evaluate(() => { window.__ui.screens.closeScreens(); window.__ui.hud.initHud(window.__app); });
 await mobile.evaluate(s => { window.__app.state = s; window.__app.mode = 'match'; window.__app.touch = true; window.__ui.hud.showHud(true); window.__ui.hud.updateHud(window.__app, s, 0.016); }, state);
 await mobile.evaluate(s => { window.__app.touch = true; window.__ui.hud.updateHud(window.__app, s, 0.016); }, state);
 await mobile.waitForTimeout(200);

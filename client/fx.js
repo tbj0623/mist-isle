@@ -197,7 +197,11 @@ function hash01(n) {
 
 export class Fx {
   constructor(scene3d) {
+    // 同一场景只允许一个 Fx（main.js 可能额外 new Fx(scene)，返回既有实例避免双份粒子池）
+    if (scene3d && scene3d.userData && scene3d.userData.__mistFx) return scene3d.userData.__mistFx;
     this.scene = scene3d || new THREE.Scene();
+    if (scene3d && scene3d.userData) scene3d.userData.__mistFx = this;
+    this._lastUpdateMs = -1e9;
     this.quality = 'balanced';
     this.seed = 1;
     this.time = 0;
@@ -366,6 +370,9 @@ export class Fx {
       case 'smoke': return this.zone('smoke', data);
       case 'fire':
       case 'molotov': return this.zone('fire', data);
+      // main.js 用的事件别名
+      case 'smokeBurst': return this.zone('smoke', data);
+      case 'fireStart': return this.zone('fire', data);
       case 'flash': {
         this.burst(x, 1.4, z, 0xffffff, 3.6, 0.16, 0);
         this.ring(x, 0.1, z, 0xffffff, 0.4, 4.2, 0.24);
@@ -516,6 +523,12 @@ export class Fx {
 
   /* ---------------- 主更新 ---------------- */
   update(dt) {
+    // scene.render 内部已推进过同一帧的 fx；main.js 再调一次时按墙钟去抖，避免双倍速度
+    if (typeof performance !== 'undefined' && performance.now) {
+      const now = performance.now();
+      if (now - this._lastUpdateMs < 4) return;
+      this._lastUpdateMs = now;
+    }
     const step = Math.min(0.05, Math.max(0, dt || 0));
     this.time += step;
     this.updateWeather(step);

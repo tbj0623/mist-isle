@@ -235,13 +235,25 @@ export class Match {
   }
 
   _nextTeamSlot() {
-    const counts = new Array(this.maxTeams).fill(0);
-    for (let i = 0; i < this.players.length; i++) counts[this.players[i].team] = (counts[this.players[i].team] || 0) + 1;
+    const counts = new Array(this.maxTeams + 1).fill(0);
+    for (let i = 0; i < this.players.length; i++) {
+      const t = this.players[i].team;
+      counts[t] = (counts[t] || 0) + 1;
+    }
     for (let t = 0; t < this.maxTeams; t++) if (counts[t] < this.teamSize) return t;
     return -1;
   }
 
   nextTeam() { return Math.max(0, this._nextTeamSlot()); }
+
+  /** 把队伍容量扩展到能容纳 count 名玩家（squad 4 人一队，最多 16 队）。 */
+  _ensureCapacity(count) {
+    const needed = Math.ceil(count / Math.max(1, this.teamSize));
+    if (needed > this.maxTeams) {
+      this.maxTeams = Math.min(MAX_PLAYERS, Math.max(this.maxTeams, needed));
+    }
+    return this.maxTeams;
+  }
 
   _applyLoadout(player, loadout) {
     const list = Array.isArray(loadout) && loadout.length ? loadout : [{ type: 'p9' }, null];
@@ -279,9 +291,10 @@ export class Match {
     if (this.phase !== 'waiting') return false;
     if (this.hordeMode) return this._startHorde();
     const target = this.mode === 'training' ? Math.max(this.players.length, 16) : this.maxPlayers;
+    this._ensureCapacity(Math.max(target, this.players.length));
     let n = this.players.filter((p) => !p.bot).length;
     let guard = 0;
-    while (this.players.length < target && guard++ < MAX_PLAYERS * 2) {
+    while (this.players.length < target && guard++ < MAX_PLAYERS * 4) {
       const team = this._nextTeamSlot();
       if (team < 0) break;
       const name = `${BOT_NAMES[(n + this.players.length) % BOT_NAMES.length]}·${1 + (n % 9)}`;
@@ -348,9 +361,30 @@ export class Match {
     this._updateCars(step);
     this._updateZones(step);
     this._updateDrops(step);
+    this._reachHorde(step);
     this._updateHorde(step);
     this._bots(step);
     this._checkEnd(step);
+    this._resolveHordeClear();
+  }
+
+  /** 把当前波次的可清除状态推进到「下一波准备期」。 */
+  _reachHorde(dt) {
+    const run = this.hordeRun;
+    if (!run || this.phase === 'ended') return;
+    if (run.wave > 0 && run.enemies.length === 0 && run.nextWaveIn <= 0 && run.wave < run.totalWaves) {
+      run.nextWaveIn = HORDE.prepTime;
+      run.prepTime = HORDE.prepTime;
+      run.clearedAt = this.time;
+    }
+  }
+
+  _resolveHordeClear() {
+    const run = this.hordeRun;
+    if (!run || this.phase === 'ended') return;
+    if (run.nextWaveIn > 0 && run.enemies.length === 0) {
+      run.nextWaveIn = Math.max(0, run.nextWaveIn);
+    }
   }
 
   input(id, raw) {
@@ -412,6 +446,7 @@ export class Match {
       this._updateReload(p, dt);
       this._updateHeal(p, dt);
       if (p.car != null) { this._carActions(p); this._driveInput(p, dt); continue; }
+      if (p.bot) continue; // bot 的移动/开火由 _bots 在 thinkBot 之后统一处理
       this._updateDodge(p, dt);
       if (p.dodgeTime > 0) continue;
       this._movePlayer(p, dt);
@@ -487,7 +522,15 @@ export class Match {
     if (inp.ping && p.pingCd <= 0) this._ping(p, inp.pingKind);
     if (inp.buy || inp.upgrade) this._buy(p, inp.buy || inp.upgrade);
     if (p.healTime > 0 || p.reloadTime > 0) return;
-    if (inp.fire) this.tryFire(p);
+    if (inp.fire) {
+      const weapon = effectiveWeapon(p);
+      // 非全自动武器需要重新扣扳机（bot 允许按住连点）
+      if (weapon && weapon.auto === false && p.triggerHeld && !p.bot) return;
+      p.triggerHeld = true;
+      this.tryFire(p);
+    } else {
+      p.triggerHeld = false;
+    }
   }
 
   // ── 射击 ──────────────────────────────────────────────────────────────────
@@ -495,7 +538,7 @@ export class Match {
     const slot = p.loadout[p.slot];
     const weapon = effectiveWeapon(p);
     if (!weapon || !slot || !p.alive || p.downed || p.car != null) return false;
-    if (p.fireCd > 0 || p.healTime > 0) return false;
+    if (p.fireCd > 0 || p.healTime > 0 || p.dodgeTime > 0) return false;
     if (slot.ammo <= 0) { this.reload(p); return false; }
     p.fireCd = weapon.interval;
     slot.ammo--;
@@ -558,6 +601,19 @@ export class Match {
       if (perp > 1.6) continue;
       bestT = t; best = { kind: 'car', target: c, t };
     }
+    const enemies = this.hordeRun ? this.hordeRun.enemies : null;
+    if (enemies) {
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.hp <= 0) continue;
+        const rx = e.x - ox; const rz = e.z - oz;
+        const t = rx * dx + rz * dz;
+        if (t <= 0.2 || t > bestT) continue;
+        const perp = Math.abs(rx * dz - rz * dx);
+        if (perp > (e.boss ? 1.3 : 0.8)) continue;
+        bestT = t; best = { kind: 'enemy', target: e, t };
+      }
+    }
     if (!best) return null;
     const wall = this.world.wallDistance(ox, oz, dx, dz, range);
     if (wall < best.t - 0.05) return null;
@@ -575,6 +631,23 @@ export class Match {
     } else if (hit.kind === 'car') {
       const car = hit.target;
       this._damageCar(car, damageAtDistance(weapon, hit.t), shooter);
+    } else if (hit.kind === 'enemy') {
+      const e = hit.target;
+      const run = this.hordeRun;
+      e.hp -= damageAtDistance(weapon, hit.t);
+      if (e.hp <= 0 && run) {
+        run.score += e.boss ? 500 : 25;
+        run.credits += e.boss ? 300 : 18;
+        run.kills++;
+        this._emit('enemyDown', { id: e.id, boss: e.boss, wave: run.wave });
+        if (run.enemies.every((x) => x.hp <= 0)) {
+          run.nextWaveIn = HORDE.prepTime;
+          run.prepTime = HORDE.prepTime;
+          run.score += 100 + run.wave * 25;
+          run.credits += 120 + run.wave * 30;
+          this._emit('waveClear', { wave: run.wave });
+        }
+      }
     }
   }
 
@@ -1322,23 +1395,10 @@ export class Match {
     if (p.bleedout <= 0) { this.kill(p, p.lastHitBy, 'bleedout'); return; }
     if (p.reviveTarget) {
       const helper = this._find(p.reviveTarget);
-      if (!helper || !helper.alive || !helper.input.revive) p.reviveProgress = 0;
-    }
-    // 队友（含 bot）自动救援
-    for (let i = 0; i < this.players.length; i++) {
-      const m = this.players[i];
-      if (!m.alive || m.downed || m.team !== p.team || m === p) continue;
-      if (m.id === p.id) continue;
-      if (dist(m.x, m.z, p.x, p.z) > REVIVE_RANGE) continue;
-      if (!m.input.revive && !m.bot) continue;
-      p.reviveTarget = m.id;
-      p.reviveProgress += dt;
-      if (p.reviveProgress >= REVIVE_TIME) {
-        this.revive(p);
+      if (!helper || !helper.alive || !helper.input.revive || helper.moved) {
+        p.reviveProgress = 0;
         p.reviveTarget = null;
-        this._emit('revived', { player: p.id, by: m.id });
       }
-      break;
     }
   }
 
@@ -1496,10 +1556,16 @@ export class Match {
     let spawned = 0;
     for (let i = 0; i < count; i++) {
       const a = (i / Math.max(1, count)) * TAU + this.rng() * 0.5;
-      const rr = 34 + this.rng() * 12;
-      const x = base.x + Math.cos(a) * rr;
-      const z = base.z + Math.sin(a) * rr;
-      if (this.world.blocked(x, z, 0.7)) continue;
+      let x = base.x + Math.cos(a) * 38;
+      let z = base.z + Math.sin(a) * 38;
+      let tries = 0;
+      while (this.world.blocked(x, z, 0.8) && tries++ < 24) {
+        const a2 = this.rng() * TAU;
+        const rr = 26 + this.rng() * 18;
+        x = base.x + Math.cos(a2) * rr;
+        z = base.z + Math.sin(a2) * rr;
+      }
+      if (this.world.blocked(x, z, 0.8)) continue;
       const boss = wave >= HORDE.bossWave && i === 0 && !run.bossSpawned;
       const hp = (boss ? 1400 : 90) * hpMul;
       run.enemies.push({
@@ -1519,15 +1585,20 @@ export class Match {
   _updateHorde(dt) {
     const run = this.hordeRun;
     if (!run || this.phase === 'ended') return;
-    if (run.nextWaveIn > 0) {
+    if (run.nextWaveIn > 0 || run.wave === 0) {
       run.nextWaveIn = Math.max(0, run.nextWaveIn - dt);
       run.prepTime = run.nextWaveIn;
       if (run.nextWaveIn <= 0) {
+        if (run.wave >= run.totalWaves) { this.end('cleared', null); return; }
         run.wave++;
-        if (run.wave > run.totalWaves) { this.end('cleared', null); return; }
         const count = HORDE.enemyStart + HORDE.enemyPerWave * (run.wave - 1);
         this._spawnEnemies(count, run.wave);
       }
+      return;
+    }
+    if (run.wave >= run.totalWaves && run.enemies.length === 0) {
+      run.score += 500;
+      this.end('cleared', null);
       return;
     }
     const base = run.base;
@@ -1545,20 +1616,18 @@ export class Match {
       if (!target || bd < bestD) {
         if (bd > 2.4) {
           const dx = (base.x - e.x) / bd; const dz = (base.z - e.z) / bd;
-          if (!this.world.blocked(e.x + dx * e.speed * dt, e.z + dz * e.speed * dt, 0.7)) {
-            e.x += dx * e.speed * dt; e.z += dz * e.speed * dt;
-          }
+          this._enemyStep(e, dx, dz, dt, 0.7);
           e.angle = Math.atan2(dx, dz);
         } else {
           e.attackCd -= dt;
-          if (e.attackCd <= 0) { e.attackCd = 1.1; base.hp = Math.max(0, base.hp - e.damage); }
+          if (e.attackCd <= 0) { e.attackCd = 2.2; base.hp = Math.max(0, base.hp - e.damage); }
         }
         continue;
       }
       const d = bestD;
       if (d > 1.6) {
         const dx = (target.x - e.x) / d; const dz = (target.z - e.z) / d;
-        e.x += dx * e.speed * dt; e.z += dz * e.speed * dt;
+        this._enemyStep(e, dx, dz, dt, 0.7);
         e.angle = Math.atan2(dx, dz);
       } else {
         e.attackCd -= dt;
@@ -1584,12 +1653,29 @@ export class Match {
       }
     }
     if (base.hp <= 0) { this.end('baseDestroyed', null); return; }
-    if (run.wave >= run.totalWaves && run.enemies.length === 0 && run.nextWaveIn <= 0) {
-      run.nextWaveIn = HORDE.prepTime;
-      run.prepTime = HORDE.prepTime;
+    if (run.wave >= run.totalWaves && run.enemies.length === 0) {
       run.score += 500;
       this.end('cleared', null);
     }
+  }
+
+  _enemyStep(e, dx, dz, dt, r) {
+    const step = e.speed * dt;
+    if (!this.world.blocked(e.x + dx * step, e.z + dz * step, r)) {
+      e.x += dx * step; e.z += dz * step;
+      return true;
+    }
+    // 撞墙时沿切线滑动，避免卡死在障碍物前
+    const tx = -dz; const tz = dx;
+    for (let s = 1; s >= -1; s -= 2) {
+      if (!this.world.blocked(e.x + tx * step * s, e.z + tz * step * s, r)) {
+        e.x += tx * step * s; e.z += tz * step * s;
+        return true;
+      }
+    }
+    if (!this.world.blocked(e.x + dx * step * 0.4, e.z, r)) { e.x += dx * step * 0.4; return true; }
+    if (!this.world.blocked(e.x, e.z + dz * step * 0.4, r)) { e.z += dz * step * 0.4; return true; }
+    return false;
   }
 
   /** 前方扇形内是否有敌人（horde 用，供伤害判定/测试）。 */
@@ -1621,6 +1707,16 @@ export class Match {
       this._emit('waveClear', { wave: run.wave });
     }
     return killed;
+  }
+
+  _startNextWave() {
+    const run = this.hordeRun;
+    if (!run) return 0;
+    if (run.wave >= run.totalWaves) { this.end('cleared', null); return 0; }
+    run.wave++;
+    run.nextWaveIn = 0;
+    const count = HORDE.enemyStart + HORDE.enemyPerWave * (run.wave - 1);
+    return this._spawnEnemies(count, run.wave);
   }
 
   upgradeCost(kind) {
@@ -1666,6 +1762,7 @@ export class Match {
       const p = this.players[i];
       if (!p.bot || !p.alive) continue;
       if (p.seat === 0 && p.car == null) continue;
+      if (this.hordeRun && this._hordeBot(p, dt)) continue;
       try {
         thinkBot(this, p, dt);
       } catch (err) {
@@ -1682,6 +1779,35 @@ export class Match {
 
   teamName(team) {
     return TEAM_NAMES[team] || `小队 ${team + 1}`;
+  }
+
+  /** horde 里 bot 的守家行为：贴近基地、朝最近的敌人射击。返回 true 表示已接管。 */
+  _hordeBot(p, dt) {
+    const run = this.hordeRun;
+    const base = run.base;
+    let target = null; let bestD = 42;
+    for (let i = 0; i < run.enemies.length; i++) {
+      const e = run.enemies[i];
+      if (e.hp <= 0) continue;
+      const d = dist(p.x, p.z, e.x, e.z);
+      if (d < bestD) { bestD = d; target = e; }
+    }
+    const toBase = dist(p.x, p.z, base.x, base.z);
+    const inp = emptyInput();
+    if (target) {
+      p.angle = Math.atan2(target.x - p.x, target.z - p.z);
+      inp.aim = p.angle;
+      inp.fire = bestD < 34 && p.reloadTime <= 0;
+      if (p.fireCd <= 0.02) this.tryFire(p);
+      if (bestD > 12) { inp.mx = Math.sin(p.angle); inp.mz = Math.cos(p.angle); }
+    } else if (toBase > 7) {
+      const a = Math.atan2(base.x - p.x, base.z - p.z);
+      inp.mx = Math.sin(a); inp.mz = Math.cos(a); inp.aim = a;
+    }
+    p.input = inp;
+    p.moved = inp.mx !== 0 || inp.mz !== 0;
+    if (inp.mx || inp.mz) this.world.moveBody(p, inp.mx * MOVE.walk * dt, inp.mz * MOVE.walk * dt, MOVE.radius);
+    return true;
   }
 
   _visibleTo(viewer, target) {

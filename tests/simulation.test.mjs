@@ -31,7 +31,7 @@ function step(m, n = 1, dt = tick) {
   return m;
 }
 
-/** 找一段至少 len 米无遮挡的直线跑道（给载具测试用）。 */
+/** 找一段至少 len 米无遮挡的直线跑道（给载具/射击测试用）。 */
 function openRun(world, len = 14) {
   for (let ring = 0; ring < 40; ring++) {
     for (let ai = 0; ai < 16; ai++) {
@@ -45,6 +45,22 @@ function openRun(world, len = 14) {
         if (world.blocked(x + Math.cos(a) * (k * len / 8), z + Math.sin(a) * (k * len / 8), 1.9)) { clear = false; break; }
       }
       if (clear) return { x, z, angle: Math.atan2(Math.cos(a), Math.sin(a)) };
+    }
+  }
+  return null;
+}
+
+/** 找一块空旷的落点 + 朝向（不穿墙），返回 {x,z,dx,dz,angle}。 */
+function openLane(world, len = 24) {
+  const spots = (world.lootSpots || []).concat(world.spawnAnchors || []);
+  for (let i = 0; i < spots.length; i++) {
+    const s = spots[i];
+    if (world.blocked(s.x, s.z, 1.2)) continue;
+    for (let ai = 0; ai < 12; ai++) {
+      const a = (ai / 12) * Math.PI * 2;
+      const dx = Math.cos(a); const dz = Math.sin(a);
+      if (world.wallDistance(s.x, s.z, dx, dz, len) < len) continue;
+      return { x: s.x, z: s.z, dx, dz, angle: Math.atan2(dx, dz) };
     }
   }
   return null;
@@ -440,23 +456,26 @@ test('配件受槽位限制：同类槽只生效第一个', () => {
 test('蹲与冲刺：速度差与耐力消耗/恢复', () => {
   const m = duel({ bots: 0 });
   const p = m.players[0];
-  m.input('a', { mx: 1, mz: 0 });
+  const lane = openLane(m.world, 26);
+  assert.ok(lane, '需要一段开阔地');
+  p.x = lane.x; p.z = lane.z;
+  m.input('a', { mx: lane.dx, mz: lane.dz });
   step(m, 20);
-  const walkDist = Math.abs(p.x);
+  const walkDist = Math.hypot(p.x - lane.x, p.z - lane.z);
   const stamina0 = p.stamina;
-  p.x = 0; p.z = 0;
-  m.input('a', { mx: 1, mz: 0, sprint: true });
+  p.x = lane.x; p.z = lane.z;
+  m.input('a', { mx: lane.dx, mz: lane.dz, sprint: true });
   step(m, 20);
-  const sprintDist = Math.abs(p.x);
+  const sprintDist = Math.hypot(p.x - lane.x, p.z - lane.z);
   assert.ok(sprintDist > walkDist, `sprint ${sprintDist} > walk ${walkDist}`);
   assert.ok(p.stamina < stamina0, 'sprint drains stamina');
   m.input('a', {});
   step(m, 30);
   assert.ok(p.stamina > 0, 'stamina regenerates when idle');
-  p.x = 0; p.z = 0; p.stamina = 100;
-  m.input('a', { mx: 1, mz: 0, crouch: true });
+  p.x = lane.x; p.z = lane.z; p.stamina = 100;
+  m.input('a', { mx: lane.dx, mz: lane.dz, crouch: true });
   step(m, 20);
-  const crouchDist = Math.abs(p.x);
+  const crouchDist = Math.hypot(p.x - lane.x, p.z - lane.z);
   assert.ok(crouchDist < walkDist, `crouch ${crouchDist} < walk ${walkDist}`);
   assert.equal(p.state, 'crouch');
 });
@@ -473,18 +492,24 @@ test('耐力低于 12 无法起跑', () => {
 test('翻滚：位移 4.3m 级别、冷却 1.9s、翻滚中不可开火', () => {
   const m = duel({ bots: 0 });
   const p = m.players[0];
-  const x0 = p.x; const z0 = p.z;
+  const lane = openLane(m.world, 12);
+  assert.ok(lane);
+  p.x = lane.x; p.z = lane.z; p.angle = lane.angle;
   p.dodgeCd = 0;
-  m.input('a', { mx: 1, mz: 0, dodge: true });
-  step(m, 1);
+  m.input('a', { mx: lane.dx, mz: lane.dz, dodge: true });
+  m.update(tick);
   assert.equal(p.state, 'dodge');
   assert.ok(p.dodgeCd > 1.5);
-  assert.equal(m.tryFire(p), false);
-  step(m, Math.ceil(MOVE_DODGE_TIME / tick) + 1);
+  assert.equal(p.input.fire, false, '翻滚输入里不该带开火');
+  assert.equal(m.tryFire(p), false, 'dodge 期间禁止开火');
+  const x0 = p.x; const z0 = p.z;
+  step(m, Math.ceil(MOVE_DODGE_TIME / tick));
   const moved = Math.hypot(p.x - x0, p.z - z0);
   assert.ok(moved > 3.2 && moved < 5.2, `dodge distance ${moved}`);
+  assert.ok(p.dodgeCd > 0);
   m.input('a', { dodge: true });
-  assert.equal(p.dodgeCd > 0, true);
+  m.update(tick);
+  assert.equal(p.dodgeTime, 0, 'dodge on cooldown must not restart');
 });
 
 test('水域减速：水中移动速度约为陆地 0.55 倍', () => {
@@ -586,6 +611,21 @@ test('64 人容量：addPlayer 到 MAX_PLAYERS，snapshot 计数正确', () => {
   assert.equal(snap.counts.total, MAX_PLAYERS);
   assert.ok(snap.counts.bots >= 0);
   assert.ok(snap.counts.teams >= 1);
+  assert.ok(snap.counts.alive > 0);
+});
+
+test('64 人满员对局：人类 + 补满 bot，能正常打出淘汰与排名', () => {
+  const m = new Match({ seed: 43, mode: 'squad', maxPlayers: MAX_PLAYERS, duration: 240 });
+  m.addPlayer('h', 'Hero', { team: 0 });
+  assert.equal(m.start(), true);
+  assert.equal(m.players.length, MAX_PLAYERS);
+  assert.ok(m.players.filter((p) => p.bot).length >= MAX_PLAYERS - 1);
+  let ticks = 0;
+  while (m.phase !== 'ended' && ticks < 9000) { m.update(tick); ticks++; }
+  assert.equal(m.phase, 'ended');
+  assert.ok(m.result.ranks.length >= 1);
+  assert.ok(m.players.every((p) => p.rank >= 1 && p.rank <= m.result.ranks.length));
+  assert.ok(m.players.reduce((a, p) => a + p.kills, 0) > 0, 'bots should fight and kill');
 });
 
 test('快照：字段完整、深拷贝、事件按 sinceEventId 过滤且有限流', () => {
@@ -632,4 +672,200 @@ test('快照：字段完整、深拷贝、事件按 sinceEventId 过滤且有限
   assert.ok(Array.isArray(snap.teammates));
   assert.equal(snap.teammates.length, 2);
   assert.ok(snap.teammates.some((t) => t.isSelf));
+});
+
+test('训练模式：单人 + 15 个低难度 bot', () => {
+  const m = new Match({ seed: 51, mode: 'training', maxPlayers: 16 });
+  m.addPlayer('a', 'Alpha', {});
+  assert.equal(m.start(), true);
+  assert.ok(m.players.length >= 16, `training should fill 16, got ${m.players.length}`);
+  const bots = m.players.filter((p) => p.bot);
+  assert.ok(bots.length >= 15);
+  assert.ok(bots.every((b) => b.difficulty === 'recruit'));
+  const snap = m.snapshot('a', 0);
+  assert.equal(snap.mode, 'training');
+});
+
+test('end() 生成完整排名表与 result 快照', () => {
+  const m = new Match({ seed: 52, mode: 'squad', maxPlayers: 8, duration: 600 });
+  m.addPlayer('a', 'Alpha', { team: 0 });
+  m.addPlayer('b', 'Bravo', { team: 0 });
+  m.addPlayer('c', 'Charlie', { team: 1 });
+  m.start();
+  assert.equal(m.end('timeout', 0), true);
+  assert.equal(m.phase, 'ended');
+  assert.equal(m.end('timeout', 0), false, 'end is idempotent');
+  assert.ok(m.result);
+  assert.equal(m.result.winnerTeam, 0);
+  assert.equal(m.result.reason, 'timeout');
+  assert.ok(Array.isArray(m.result.ranks));
+  assert.ok(m.result.ranks.every((r) => r.rank >= 1 && typeof r.name === 'string'));
+  const snap = m.snapshot('a', 0);
+  assert.ok(snap.result && Array.isArray(snap.result.ranks));
+  assert.ok(snap.events.some((e) => e.type === 'end'));
+  // 结束后 update 不再推进时间
+  const t = m.time;
+  m.update(tick);
+  assert.equal(m.time, t);
+});
+
+test('观战：死亡玩家仍能拿到快照，队友列表保留全队', () => {
+  const m = new Match({ seed: 53, mode: 'squad', maxPlayers: 8, duration: 600 });
+  m.addPlayer('a', 'Alpha', { team: 0 });
+  m.addPlayer('b', 'Bravo', { team: 0 });
+  m.addPlayer('c', 'Charlie', { team: 1 });
+  m.start();
+  m.players.length = 3;
+  const a = m.players[0];
+  m.kill(a, 'c', 'shot');
+  const snap = m.snapshot('a', 0);
+  assert.equal(snap.me.alive, false);
+  assert.equal(snap.me.rank, 0);
+  assert.ok(snap.teammates.some((t) => t.id === 'a'));
+  assert.ok(snap.teammates.some((t) => t.id === 'b'));
+  assert.ok(snap.players.every((p) => typeof p.x === 'number'));
+  assert.ok(snap.counts.alive >= 2);
+});
+
+test('bot 会移动并且会开火', () => {
+  const m = new Match({ seed: 61, mode: 'squad', maxPlayers: 8, duration: 600 });
+  m.addPlayer('a', 'Alpha', { team: 0 });
+  m.addPlayer('b', 'Bravo', { team: 0 });
+  m.start();
+  m.players.length = 2;
+  const lane = openLane(m.world, 26);
+  assert.ok(lane);
+  m.players[0].x = lane.x; m.players[0].z = lane.z;
+  m.players[1].x = lane.x + lane.dx * 2; m.players[1].z = lane.z + lane.dz * 2;
+  const bot = m.addPlayer('botx', 'BotX', { bot: true, team: 3 });
+  bot.bot = true;
+  bot.x = lane.x + lane.dx * 9; bot.z = lane.z + lane.dz * 9;
+  for (let i = 0; i < 20; i++) m.addPlayer(`bm${i}`, `BM${i}`, { bot: true, team: 4 + (i % 6) });
+  const pos0 = m.players.map((p) => ({ x: p.x, z: p.z }));
+  m.zone.nextIn = 9999; m.dropsLeft = 0;
+  step(m, 150);
+  let movedCount = 0;
+  for (let i = 0; i < m.players.length; i++) {
+    const p = m.players[i];
+    if (!p.alive) continue;
+    if (Math.hypot(p.x - pos0[i].x, p.z - pos0[i].z) > 0.5) movedCount++;
+  }
+  assert.ok(movedCount > 0, 'bots should move');
+  assert.ok(m.events.some((e) => e.type === 'shot' || e.type === 'kill'), 'bots should fight');
+});
+
+test('horde：波次推进、基地受击、升级与清关', () => {
+  const m = new Match({ seed: 71, mode: 'horde', maxPlayers: 8 });
+  m.addPlayer('a', 'Alpha', {});
+  m.addPlayer('b', 'Bravo', {});
+  assert.equal(m.start(), true);
+  assert.equal(m.phase, 'live');
+  assert.ok(m.hordeRun);
+  assert.equal(m.hordeRun.base.maxHp, 600);
+  assert.equal(m.hordeRun.base.hp, 600);
+  let snap = m.snapshot('a', 0);
+  assert.ok(snap.horde, 'horde snapshot present');
+  assert.equal(snap.horde.baseMaxHp, 600);
+  assert.equal(snap.horde.totalWaves, 10);
+  assert.equal(snap.horde.wave, 0);
+  assert.ok(snap.horde.cost > 0);
+  // 准备期结束 → 第 1 波
+  step(m, Math.ceil(15 / tick) + 2);
+  assert.equal(m.hordeRun.wave, 1);
+  assert.ok(m.hordeRun.enemies.length > 0);
+  assert.equal(m.hordeRun.enemies.length, 6 + 3 * 0);
+  // 敌人会推进并打基地
+  m.players.forEach((p) => { p.x = 1e6; p.z = 1e6; });
+  const baseHp0 = m.hordeRun.base.hp;
+  step(m, 900);
+  assert.ok(m.hordeRun.base.hp < baseHp0, 'enemies should damage the base');
+  // 清空本波 → 进入准备期
+  m.hordeRun.enemies.forEach((e) => { e.hp = 0; });
+  step(m, 4);
+  assert.equal(m.hordeRun.enemies.length, 0);
+  assert.ok(m.hordeRun.nextWaveIn > 0);
+  // 升级：修复基地
+  m.hordeRun.base.hp = 200;
+  m.hordeRun.credits = 1000;
+  assert.equal(m.upgradeCost('repair'), 120);
+  assert.equal(m._buy(m.players[0], 'repair'), true);
+  assert.ok(m.hordeRun.base.hp > 200);
+  assert.equal(m.upgradeCost('repair'), 180);
+  assert.equal(m._buy(m.players[0], 'ammo'), true);
+  assert.equal(m._buy(m.players[0], 'armor'), true);
+  assert.equal(m._buy(m.players[0], 'turret'), true);
+  assert.equal(m.hordeRun.base.turrets, 1);
+});
+
+test('horde：基地被摧毁立即结束，玩家阵亡 8 秒后在基地复活', () => {
+  const m = new Match({ seed: 72, mode: 'horde', maxPlayers: 4 });
+  m.addPlayer('a', 'Alpha', {});
+  m.start();
+  const p = m.players[0];
+  const base = m.hordeRun.base;
+  m.hordeRun.nextWaveIn = 0;
+  step(m, 2);
+  assert.ok(m.hordeRun.enemies.length > 0);
+  m.kill(p, null, 'test');
+  step(m, Math.ceil(8 / tick) + 4);
+  assert.equal(p.alive, true, 'horde death should respawn after 8s');
+  base.hp = 0;
+  step(m, 3);
+  assert.equal(m.phase, 'ended');
+  assert.equal(m.resultReason, 'baseDestroyed');
+  assert.ok(m.snapshot('a', 0).horde.baseHp <= 0);
+});
+
+test('性能：64 玩家 600 tick 低于 8 秒', () => {
+  const m = new Match({ seed: 81, mode: 'squad', maxPlayers: MAX_PLAYERS });
+  for (let i = 0; i < MAX_PLAYERS; i++) {
+    m.addPlayer(`p${i}`, `P${i}`, { team: Math.floor(i / 4) });
+  }
+  m.start();
+  const t0 = performance.now();
+  for (let i = 0; i < 600; i++) m.update(tick);
+  const ms = performance.now() - t0;
+  const perTick = ms / 600;
+  assert.ok(ms < 8000, `600 ticks took ${ms.toFixed(0)}ms`);
+  assert.ok(perTick < 6, `avg ${perTick.toFixed(2)}ms/tick exceeds 6ms budget`);
+  const snap = m.snapshot('p0', 0);
+  assert.ok(snap.players.length <= MAX_PLAYERS + 4);
+});
+
+test('MAX_LOOT：物资点数量不会超过上限', () => {
+  const m = new Match({ seed: 91, mode: 'squad', maxPlayers: 4 });
+  assert.ok(m.loot.length <= MAX_LOOT);
+  for (let i = 0; i < MAX_LOOT + 50; i++) m.addLoot('consumable', 'bandage', 0, 0, { qty: 1 });
+  assert.ok(m.loot.length <= MAX_LOOT);
+});
+
+test('确定性：相同 seed 的两局 tick 后状态一致', () => {
+  const build = () => {
+    const m = new Match({ seed: 4242, mode: 'squad', maxPlayers: 8, duration: 420 });
+    m.addPlayer('a', 'Alpha', { team: 0 });
+    m.start();
+    for (let i = 0; i < 240; i++) m.update(tick);
+    return m;
+  };
+  const a = build(); const b = build();
+  assert.equal(a.players.length, b.players.length);
+  for (let i = 0; i < a.players.length; i++) {
+    assert.equal(a.players[i].x.toFixed(4), b.players[i].x.toFixed(4));
+    assert.equal(a.players[i].z.toFixed(4), b.players[i].z.toFixed(4));
+    assert.equal(a.players[i].hp.toFixed(3), b.players[i].hp.toFixed(3));
+  }
+  assert.equal(a.eventId, b.eventId);
+  assert.equal(a.zone.phase, b.zone.phase);
+});
+
+test('断线重连：disconnect 后输入被清空，reconnect 恢复', () => {
+  const m = duel({ bots: 0 });
+  const p = m.players[0];
+  m.input('a', { mx: 1, mz: 1, fire: true });
+  assert.equal(m.disconnect('a'), true);
+  assert.equal(p.connected, false);
+  assert.equal(p.input.fire, false);
+  assert.equal(m.reconnect('a'), true);
+  assert.equal(p.connected, true);
+  assert.equal(m.input('ghost', { fire: true }), false);
 });

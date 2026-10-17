@@ -26,6 +26,8 @@ const RARITY_RGB = {
   epic: [0.77, 0.55, 0.94], legendary: [0.96, 0.71, 0.27],
 };
 function rarityRgbCompat(rarity) { return RARITY_RGB[rarity] || RARITY_RGB.common; }
+/** 不同物资类型的地面高度（武器平放、弹药/护甲略高）。 */
+function typeLift(entry) { return entry === undefined ? 0.3 : 0.32; }
 
 let _vcm = null;
 /** 静态世界专用：单材质顶点色（所有静态几何共享，1 个 program）。 */
@@ -143,7 +145,7 @@ export class GameScene {
     this.fx.setQuality(this.quality);
     this.renderer.setSize(this.width, this.height, false);
     if (this.scene.fog) { this.scene.fog.near = this.lighting.fogNear; this.scene.fog.far = this.lighting.fogFar; }
-    if (this.lootMesh) this.lootMesh.visible = true;
+    if (this.lootGlow) this.lootGlow.visible = true;
   }
 
   /* ---------------- 常驻叠加物件 ---------------- */
@@ -249,7 +251,7 @@ export class GameScene {
     this.roofs = cached.roofs;
     this.scene.add(this.worldGroup);
     this.applyAtmosphere(cached.world?.def?.timeOfDay || 'day', cached.world?.def?.weather || 'clear');
-    if (this.lootMesh) this.buildLootMeshes();
+    if (this.lootMeshes) this.buildLootMeshes();
     this.home = false;
     return this.world;
   }
@@ -329,6 +331,22 @@ export class GameScene {
         bake(detail, UNIT_BOX, col, x, 0.045, z, 1.4 + rnd() * 2.2, 0.05, 1.4 + rnd() * 2.2, 0, rnd() * 3, 0);
       }
       staticGroup.add(new THREE.Mesh(finishList(detail), vertexColorMaterial()));
+    }
+    // 接触阴影：树/建筑/岩石底部的深色贴地圆盘（1 个 InstancedMesh，让物体"落地"）
+    const blobs = [];
+    for (const tree of world.trees || []) blobs.push({ x: tree.x, z: tree.z, sx: 1.55 * (tree.scale || 1), sz: 1.55 * (tree.scale || 1) });
+    for (const b of world.buildings || []) blobs.push({ x: b.x, z: b.z, sx: (b.w || 10) * 0.66, sz: (b.d || 9) * 0.66 });
+    for (const o of world.obstacles || []) if (o.kind === 'rock') blobs.push({ x: o.x, z: o.z, sx: (o.w || 2) * 0.58, sz: (o.d || 2) * 0.58 });
+    if (blobs.length) {
+      const bloomShadow = new THREE.MeshBasicMaterial({ color: 0x16241f, transparent: true, opacity: 0.22, depthWrite: false });
+      const shadow = new THREE.InstancedMesh(UNIT_CIRCLE, bloomShadow, blobs.length);
+      blobs.forEach((b, i) => {
+        _e.set(-Math.PI / 2, 0, 0); _q.setFromEuler(_e);
+        _m.compose(_v.set(b.x, 0.055, b.z), _q, _s.set(b.sx, b.sz, 1));
+        shadow.setMatrixAt(i, _m);
+      });
+      shadow.instanceMatrix.needsUpdate = true; shadow.computeBoundingSphere();
+      shadow.renderOrder = 1; staticGroup.add(shadow);
     }
     // 建筑：楼层地板 + 墙体（与碰撞体一致）+ 屋顶实例（近处独立 mesh 可淡出）
     const wallList = createList();
@@ -507,7 +525,8 @@ export class GameScene {
     this.predicted = null;
     this.follow.set(0, 0, 0);
     this.applyAtmosphere(this.world?.def?.timeOfDay || 'day', this.world?.def?.weather || 'clear');
-    if (this.lootMesh) this.lootMesh.count = 0;
+    if (this.lootMeshes) for (const { mesh } of this.lootMeshes.values()) mesh.count = 0;
+    if (this.lootGlow) this.lootGlow.count = 0;
     this.renderer.setClearColor(this.lighting.clearColor, 1);
   }
 
@@ -557,22 +576,31 @@ export class GameScene {
   }
 
   buildLootMeshes() {
-    if (this.lootMesh) { this.entityGroup.remove(this.lootMesh); this.lootMesh.dispose(); this.lootMesh = null; }
-    if (this.lootGlow) { this.entityGroup.remove(this.lootGlow); this.lootGlow.dispose(); this.lootGlow = null; }
-    const template = createLootModel('weapon', 'rifle', 'common');
-    const geo = template.parts.mesh.geometry;
-    this.lootMesh = new THREE.InstancedMesh(geo, vertexColorMaterial(), MAX_LOOT);
-    this.lootMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.lootMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_LOOT * 3), 3);
-    this.lootMesh.count = 0; this.lootMesh.frustumCulled = false;
-    this.entityGroup.add(this.lootMesh);
-    const glowGeo = UNIT_CYL;
-    this.lootGlow = new THREE.InstancedMesh(glowGeo, glowMaterial(0xffffff, 0.3), MAX_LOOT);
+    this.disposeLootMeshes();
+    const TYPES = ['weapon', 'ammo', 'armor', 'consumable', 'throwable', 'attachment'];
+    this.lootMeshes = new Map();
+    for (const type of TYPES) {
+      const template = createLootModel(type, type === 'weapon' ? 'rifle' : '', 'common');
+      const mesh = new THREE.InstancedMesh(template.parts.mesh.geometry, vertexColorMaterial(), MAX_LOOT);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_LOOT * 3), 3);
+      mesh.count = 0; mesh.frustumCulled = false; mesh.renderOrder = 2;
+      this.entityGroup.add(mesh);
+      this.lootMeshes.set(type, { mesh, items: [] });
+      disposeModelSoft(template.group);
+    }
+    this.lootGlow = new THREE.InstancedMesh(UNIT_CYL, glowMaterial(0xffffff, 0.28), MAX_LOOT);
     this.lootGlow.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.lootGlow.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_LOOT * 3), 3);
     this.lootGlow.count = 0; this.lootGlow.frustumCulled = false;
     this.entityGroup.add(this.lootGlow);
-    disposeModelSoft(template.group);
+    this.lootItems = [];
+  }
+
+  disposeLootMeshes() {
+    if (this.lootMeshes) { for (const { mesh } of this.lootMeshes.values()) { this.entityGroup.remove(mesh); mesh.dispose(); } this.lootMeshes = null; }
+    if (this.lootMesh) { this.entityGroup.remove(this.lootMesh); this.lootMesh.dispose(); this.lootMesh = null; }
+    if (this.lootGlow) { this.entityGroup.remove(this.lootGlow); this.lootGlow.dispose(); this.lootGlow = null; }
   }
 
   /* ---------------- 玩家模型池 ---------------- */
@@ -742,24 +770,39 @@ export class GameScene {
   }
 
   updateLoot(loot) {
-    if (!this.lootMesh) this.buildLootMeshes();
+    if (!this.lootMeshes) this.buildLootMeshes();
     const max = Math.min(loot.length, MAX_LOOT, this.lootCap || MAX_LOOT);
-    this.lootMesh.count = max;
-    this.lootGlow.count = max;
     this.lootItems = max ? loot.slice(0, max) : [];
+    for (const entry of this.lootMeshes.values()) { entry.items.length = 0; entry.mesh.count = 0; }
     for (let i = 0; i < max; i++) {
       const item = this.lootItems[i];
-      _m.compose(_v.set(item.x || 0, 0.34, item.z || 0), _q.identity(), _s.setScalar(1));
-      this.lootMesh.setMatrixAt(i, _m);
-      const rb = rarityRgbCompat(item.rarity);
-      this.lootMesh.setColorAt(i, _c.setRGB(rb[0], rb[1], rb[2]));
-      _m.compose(_v.set(item.x || 0, 0.9, item.z || 0), _q.identity(), _s.set(0.16, 1.6, 0.16));
-      this.lootGlow.setMatrixAt(i, _m);
-      this.lootGlow.setColorAt(i, _c.setRGB(rb[0] * 0.9, rb[1] * 0.9, rb[2] * 0.9));
+      const type = item.type === 'backpack' ? 'attachment' : (this.lootMeshes.has(item.type) ? item.type : 'ammo');
+      const entry = this.lootMeshes.get(type);
+      entry.items.push(item);
     }
-    this.lootMesh.instanceMatrix.needsUpdate = true;
+    let glowCount = 0;
+    for (const entry of this.lootMeshes.values()) {
+      const { mesh, items } = entry;
+      mesh.count = items.length;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        _m.compose(_v.set(item.x || 0, typeLift(entry), item.z || 0), _q.identity(), _s.setScalar(1));
+        mesh.setMatrixAt(i, _m);
+        const [r, g, b] = rarityRgbCompat(item.rarity);
+        mesh.setColorAt(i, _c.setRGB(r, g, b));
+        if (glowCount < MAX_LOOT) {
+          const h = item.rarity === 'legendary' ? 2.4 : item.rarity === 'epic' ? 1.9 : item.rarity === 'rare' ? 1.5 : 1.15;
+          _m.compose(_v.set(item.x || 0, h * 0.5, item.z || 0), _q.identity(), _s.set(0.14, h, 0.14));
+          this.lootGlow.setMatrixAt(glowCount, _m);
+          this.lootGlow.setColorAt(glowCount, _c.setRGB(r, g, b));
+          glowCount++;
+        }
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    }
+    this.lootGlow.count = glowCount;
     this.lootGlow.instanceMatrix.needsUpdate = true;
-    if (this.lootMesh.instanceColor) this.lootMesh.instanceColor.needsUpdate = true;
     if (this.lootGlow.instanceColor) this.lootGlow.instanceColor.needsUpdate = true;
   }
 
@@ -1084,20 +1127,26 @@ export class GameScene {
   }
 
   tickLoot(elapsed) {
-    if (!this.lootMesh || !this.lootMesh.count) return;
-    const count = this.lootMesh.count;
-    for (let i = 0; i < count; i++) {
-      const item = this.lootItems?.[i];
-      if (!item) continue;
-      const bob = Math.sin(elapsed * 1.9 + (item.x || 0) * 0.7) * 0.05;
-      _e.set(0, elapsed * 0.85 + (item.z || 0) * 0.2, 0); _q.setFromEuler(_e);
-      _m.compose(_v.set(item.x || 0, 0.34 + bob + (item.y || 0), item.z || 0), _q, _s.setScalar(item.type === 'weapon' ? 1 : 0.82));
-      this.lootMesh.setMatrixAt(i, _m);
-      const h = item.rarity === 'legendary' ? 2.6 : item.rarity === 'epic' ? 2.1 : 1.6;
-      _m.compose(_v.set(item.x || 0, h * 0.5 + 0.1, item.z || 0), _q.identity(), _s.set(0.16 + Math.sin(elapsed * 2.4 + i) * 0.02, h, 0.16 + Math.sin(elapsed * 2.4 + i) * 0.02));
-      this.lootGlow.setMatrixAt(i, _m);
+    if (!this.lootMeshes) return;
+    let glow = 0;
+    for (const [type, entry] of this.lootMeshes) {
+      const { mesh, items } = entry;
+      if (!items.length) continue;
+      const lift = type === 'weapon' ? 0.3 : 0.34;
+      const spin = type === 'weapon' ? 0.7 : 1.05;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const bob = Math.sin(elapsed * 1.9 + (item.x || 0) * 0.7) * 0.05;
+        _e.set(0, elapsed * spin + (item.z || 0) * 0.2, 0); _q.setFromEuler(_e);
+        _m.compose(_v.set(item.x || 0, lift + bob + (item.y || 0), item.z || 0), _q, _s.setScalar(type === 'weapon' ? 1.1 : 0.92));
+        mesh.setMatrixAt(i, _m);
+        const h = item.rarity === 'legendary' ? 2.4 : item.rarity === 'epic' ? 1.9 : item.rarity === 'rare' ? 1.5 : 1.15;
+        _m.compose(_v.set(item.x || 0, h * 0.5, item.z || 0), _q.identity(), _s.set(0.14 + Math.sin(elapsed * 2.4 + i) * 0.02, h, 0.14 + Math.sin(elapsed * 2.4 + i) * 0.02));
+        this.lootGlow.setMatrixAt(glow++, _m);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
     }
-    this.lootMesh.instanceMatrix.needsUpdate = true;
+    this.lootGlow.count = glow;
     this.lootGlow.instanceMatrix.needsUpdate = true;
   }
 

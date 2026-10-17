@@ -291,6 +291,9 @@ export function matchSummaryFromState(snapshot = {}, selfId = null, extra = {}) 
   };
 }
 
+// 契约 §9 的命名别名：matchSummary(state, selfId)
+export const matchSummary = matchSummaryFromState;
+
 // ---------- 初始存档 ----------
 export function emptyMeta(base = {}) {
   return {

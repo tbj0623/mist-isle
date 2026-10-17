@@ -99,8 +99,8 @@ export class SpatialGrid {
   }
 }
 
-/** 射线与轴对齐矩形：返回进入距离（m），无交集返回 -1。 */
-function rayRect(px, pz, ux, uz, range, o) {
+/** 射线与轴对齐矩形（遗留导出，保留供外部工具使用）。 */
+export function rayRect(px, pz, ux, uz, range, o) {
   let tmin = 0;
   let tmax = range;
   const minX = o.x - o.w * 0.5;
@@ -130,25 +130,90 @@ function rayRect(px, pz, ux, uz, range, o) {
   return tmin;
 }
 
-/** 基于障碍列表构造碰撞/射线闭包（每张地图一份，空间哈希加速）。 */
-export function makeCollision(obstacles, insideLand) {
-  const grid = new SpatialGrid(COLLIDE_CELL);
-  for (let i = 0; i < obstacles.length; i++) grid.add(obstacles[i]);
-  const queryOut = [];
-
-  function collides(x, z, r) {
-    const n = grid.query(x - r, z - r, x + r, z + r, queryOut);
-    for (let i = 0; i < n; i++) {
-      if (pointRectDist(x, z, queryOut[i]) < r) return true;
-    }
-    return false;
+/** 紧凑索引网格：把障碍边界烤成 Float64Array，避免逐次对象属性访问。 */
+class IndexGrid {
+  constructor(cell) {
+    this.cell = cell;
+    this.buckets = new Map();
+    this.stamp = new Uint32Array(64);
+    this.mark = 1;
   }
+  build(bounds, count) {
+    const c = this.cell;
+    for (let i = 0; i < count; i++) {
+      const x0 = Math.floor(bounds[i * 4] / c);
+      const z0 = Math.floor(bounds[i * 4 + 1] / c);
+      const x1 = Math.floor(bounds[i * 4 + 2] / c);
+      const z1 = Math.floor(bounds[i * 4 + 3] / c);
+      for (let cx = x0; cx <= x1; cx++) {
+        for (let cz = z0; cz <= z1; cz++) {
+          const k = (cx + GRID_ORIGIN) * 4096 + (cz + GRID_ORIGIN);
+          const bucket = this.buckets.get(k);
+          if (bucket) bucket.push(i);
+          else this.buckets.set(k, [i]);
+        }
+      }
+    }
+    if (this.stamp.length < count) this.stamp = new Uint32Array(count + 64);
+  }
+  /** 收集矩形范围内的候选索引（去重）。 */
+  gather(minX, minZ, maxX, maxZ, out) {
+    out.length = 0;
+    const c = this.cell;
+    const m = this.mark++;
+    if (m >= 0xffffffff) { this.stamp.fill(0); this.mark = 1; }
+    const stamp = this.stamp;
+    const x0 = Math.floor(minX / c);
+    const x1 = Math.floor(maxX / c);
+    const z0 = Math.floor(minZ / c);
+    const z1 = Math.floor(maxZ / c);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const bucket = this.buckets.get((cx + GRID_ORIGIN) * 4096 + (cz + GRID_ORIGIN));
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const idx = bucket[i];
+          if (stamp[idx] === m) continue;
+          stamp[idx] = m;
+          out.push(idx);
+        }
+      }
+    }
+    return out.length;
+  }
+}
+
+/** 基于障碍列表构造碰撞/射线闭包（每张地图一份，紧凑索引 + 空间哈希加速）。 */
+export function makeCollision(obstacles, insideLand) {
+  const n = obstacles.length;
+  const bounds = new Float64Array(n * 4);
+  const blocksBullets = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const o = obstacles[i];
+    bounds[i * 4] = o.x - o.w * 0.5;
+    bounds[i * 4 + 1] = o.z - o.d * 0.5;
+    bounds[i * 4 + 2] = o.x + o.w * 0.5;
+    bounds[i * 4 + 3] = o.z + o.d * 0.5;
+    blocksBullets[i] = o.blocksBullets === false ? 0 : 1;
+  }
+  const grid = new IndexGrid(COLLIDE_CELL);
+  grid.build(bounds, n);
+  const cand = [];
+  const grid24 = new IndexGrid(24);
+  grid24.build(bounds, n);
 
   function blocked(x, z, r = PLAYER_RADIUS) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return true;
     if (!insideLand(x, z)) return true;
     const radius = Number.isFinite(r) && r > 0 ? r : PLAYER_RADIUS;
-    return collides(x, z, radius);
+    const cnt = grid.gather(x - radius, z - radius, x + radius, z + radius, cand);
+    for (let i = 0; i < cnt; i++) {
+      const k = cand[i] * 4;
+      const dx = x - (x < bounds[k] ? bounds[k] : x > bounds[k + 2] ? bounds[k + 2] : x);
+      const dz = z - (z < bounds[k + 1] ? bounds[k + 1] : z > bounds[k + 3] ? bounds[k + 3] : z);
+      if (dx * dx + dz * dz < radius * radius) return true;
+    }
+    return false;
   }
 
   function moveBody(body, dx, dz, r = PLAYER_RADIUS) {
@@ -173,19 +238,47 @@ export function makeCollision(obstacles, insideLand) {
     if (!(len > 1e-9)) return maxRange;
     const ux = dx / len;
     const uz = dz / len;
-    const n = grid.query(
-      Math.min(x, x + ux * maxRange) - 0.6,
-      Math.min(z, z + uz * maxRange) - 0.6,
-      Math.max(x, x + ux * maxRange) + 0.6,
-      Math.max(z, z + uz * maxRange) + 0.6,
-      queryOut,
+    const ex = x + ux * maxRange;
+    const ez = z + uz * maxRange;
+    const cnt = grid24.gather(
+      Math.min(x, ex) - 0.7, Math.min(z, ez) - 0.7,
+      Math.max(x, ex) + 0.7, Math.max(z, ez) + 0.7,
+      cand,
     );
     let best = maxRange;
-    for (let i = 0; i < n; i++) {
-      const o = queryOut[i];
-      if (o.blocksBullets === false) continue;
-      const t = rayRect(x, z, ux, uz, best, o);
-      if (t >= 0 && t < best) best = t;
+    for (let i = 0; i < cnt; i++) {
+      const idx = cand[i];
+      if (blocksBullets[idx] === 0) continue;
+      const k = idx * 4;
+      let tmin = 0;
+      let tmax = best;
+      let ok = true;
+      // X 轴
+      if (ux > -1e-9 && ux < 1e-9) {
+        if (x < bounds[k] || x > bounds[k + 2]) ok = false;
+      } else {
+        const t1 = (bounds[k] - x) / ux;
+        const t2 = (bounds[k + 2] - x) / ux;
+        const lo = t1 < t2 ? t1 : t2;
+        const hi = t1 < t2 ? t2 : t1;
+        if (lo > tmin) tmin = lo;
+        if (hi < tmax) tmax = hi;
+        if (tmin > tmax) ok = false;
+      }
+      if (ok) {
+        if (uz > -1e-9 && uz < 1e-9) {
+          if (z < bounds[k + 1] || z > bounds[k + 3]) ok = false;
+        } else {
+          const t1 = (bounds[k + 1] - z) / uz;
+          const t2 = (bounds[k + 3] - z) / uz;
+          const lo = t1 < t2 ? t1 : t2;
+          const hi = t1 < t2 ? t2 : t1;
+          if (lo > tmin) tmin = lo;
+          if (hi < tmax) tmax = hi;
+          if (tmin > tmax) ok = false;
+        }
+      }
+      if (ok && tmin >= 0 && tmin < best) best = tmin;
     }
     return best;
   }
@@ -254,6 +347,20 @@ class Builder {
       return d <= w.r + (w.pad || 0);
     }
     return Math.abs(x - w.x) <= w.w * 0.5 && Math.abs(z - w.z) <= w.d * 0.5;
+  }
+
+  /** 该点周围 pad 米内是否有水域（深水不可建，冰湖可建但一般留空）。 */
+  nearWater(x, z, pad = 4) {
+    for (let i = 0; i < this.waters.length; i++) {
+      const w = this.waters[i];
+      if (w.r) {
+        const d = Math.hypot(x - w.x, z - w.z);
+        if (d <= w.r + pad) return true;
+      } else if (Math.abs(x - w.x) <= w.w * 0.5 + pad && Math.abs(z - w.z) <= w.d * 0.5 + pad) {
+        return true;
+      }
+    }
+    return false;
   }
 
   inWater(x, z) {
@@ -526,6 +633,7 @@ function addHouse(bd, rng, x, z, w, d, opts = {}) {
   // 局部坐标 -> 世界坐标（门洞判断用局部坐标即可，因为 rot=0 时一致；带 rot 的建筑按网格近似）
   const wall = (cx, cz, ww, dd) => bd.obstacle(cx, cz, ww, dd, 'wall', {
     h: wallH, regionId: b.regionId, rot: 0, building: b.id,
+    blocksVision: wallH >= 2.4,
   });
   const hw = w * 0.5;
   const hd = d * 0.5;
@@ -698,6 +806,8 @@ function scatterRocks(bd, rng, cx, cz, radius, count) {
 /** 在矩形区域内尝试放置一栋建筑；失败返回 null。 */
 function placeBuilding(bd, rng, x, z, w, d, opts = {}) {
   if (!bd.insideLand(x, z, Math.max(w, d) * 0.5 + 6)) return null;
+  // 冰湖/港湾保持开阔：建筑不得压在水域上（含 6m 缓冲）
+  if (!opts.allowWater && bd.nearWater(x, z, Math.max(w, d) * 0.5 + 6)) return null;
   if (!bd.free(x, z, w, d, opts.pad ?? 3.2, { keepOut: opts.keepOut !== false })) return null;
   if (roadOverlap(bd, x, z, w, d, opts.roadPad ?? 0.6)) return null;
   return addHouse(bd, rng, x, z, w, d, opts);
@@ -933,38 +1043,46 @@ function fillCars(bd, rng) {
   }
 }
 
-/** 出生锚点：均匀分布在陆地内，彼此间距 ≥ ANCHOR_SPACING。 */
+/** 出生锚点：六边形候选网格 + 贪心最大间隔，保证 ≥40 且彼此间距 ≥ ANCHOR_SPACING。 */
 function fillAnchors(bd, rng) {
-  const target = 48;
   const minD2 = ANCHOR_SPACING * ANCHOR_SPACING;
-  const pts = [];
-  for (let guard = 0; guard < 30000 && pts.length < target; guard++) {
-    const a = rng() * TAU;
-    const rr = Math.sqrt(rng()) * (bd.radius - 26);
-    const x = Math.cos(a) * rr;
-    const z = Math.sin(a) * rr;
-    if (bd.inWater(x, z)) continue;
-    if (bd.nearSolid(x, z, 2.0)) continue;
-    let ok = true;
-    for (let i = 0; i < pts.length; i++) {
-      if (dist2(pts[i].x, pts[i].z, x, z) < minD2) { ok = false; break; }
+  const cands = [];
+  const step = 16;
+  const lim = bd.radius - 18;
+  for (let gz = -lim; gz <= lim; gz += step) {
+    const off = (Math.round(gz / step) % 2) * step * 0.5;
+    for (let gx = -lim; gx <= lim; gx += step) {
+      const x = gx + off + rand(rng, -2, 2);
+      const z = gz + rand(rng, -2, 2);
+      if (x * x + z * z > lim * lim) continue;
+      if (bd.inWater(x, z)) continue;
+      if (bd.nearSolid(x, z, 2.0)) continue;
+      cands.push({ x, z });
     }
-    if (ok) pts.push({ x, z });
   }
-  // 兜底：六边形网格采样，保证 ≥40 且间距不破
+  const pts = [];
+  // 打乱候选顺序（确定性）
+  for (let i = cands.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = cands[i]; cands[i] = cands[j]; cands[j] = tmp;
+  }
+  for (let i = 0; i < cands.length && pts.length < 48; i++) {
+    const c = cands[i];
+    let ok = true;
+    for (let j = 0; j < pts.length; j++) {
+      if (dist2(pts[j].x, pts[j].z, c.x, c.z) < minD2) { ok = false; break; }
+    }
+    if (ok) pts.push(c);
+  }
+  // 兜底：放宽间距挑够下限
   if (pts.length < MIN_ANCHORS) {
-    const step = ANCHOR_SPACING + 1.5;
-    for (let gx = -bd.radius + 20; gx <= bd.radius - 20 && pts.length < target; gx += step) {
-      for (let gz = -bd.radius + 20; gz <= bd.radius - 20 && pts.length < target; gz += step) {
-        const x = gx + (((gz / step) | 0) % 2) * step * 0.5;
-        if (bd.inWater(x, gz)) continue;
-        if (bd.nearSolid(x, gz, 2.0)) continue;
-        let ok = true;
-        for (let i = 0; i < pts.length; i++) {
-          if (dist2(pts[i].x, pts[i].z, x, gz) < minD2) { ok = false; break; }
-        }
-        if (ok) pts.push({ x, z: gz });
+    for (let i = 0; i < cands.length && pts.length < MIN_ANCHORS; i++) {
+      const c = cands[i];
+      let ok = true;
+      for (let j = 0; j < pts.length; j++) {
+        if (dist2(pts[j].x, pts[j].z, c.x, c.z) < minD2) { ok = false; break; }
       }
+      if (ok) pts.push(c);
     }
   }
   for (let i = 0; i < pts.length; i++) bd.anchor(pts[i].x, pts[i].z);
@@ -982,9 +1100,9 @@ function buildNav(world) {
   const walkable = new Uint8Array(cols * rows);
   const blocked = world.blocked;
   for (let r = 0; r < rows; r++) {
-    const z = minZ + r * cell;
+    const z = minZ + (r + 0.5) * cell;
     for (let c = 0; c < cols; c++) {
-      const x = minX + c * cell;
+      const x = minX + (c + 0.5) * cell;
       walkable[r * cols + c] = blocked(x, z, 0.9) ? 0 : 1;
     }
   }
@@ -999,17 +1117,35 @@ function buildNav(world) {
       return nav.walkable[r * cols + c] === 1;
     },
     blockedAt(x, z) { return !nav.isWalkable(x, z); },
-    nearestWalkable(x, z, maxR = 14) {
-      if (nav.isWalkable(x, z)) return { x, z };
+    nearestWalkable(x, z, maxR = 24) {
+      const c0 = nav.colOf(x);
+      const r0 = nav.rowOf(z);
+      if (c0 >= 0 && r0 >= 0 && c0 < cols && r0 < rows && nav.walkable[r0 * cols + c0] === 1) {
+        return { x, z };
+      }
+      // 以单元中心为起点做环形搜索，命中后返回单元中心（保证落在该单元内）
       for (let rr = cell; rr <= maxR; rr += cell) {
-        for (let i = 0; i < 16; i++) {
-          const a = (i / 16) * TAU;
+        const steps = Math.max(8, Math.round((TAU * rr) / cell));
+        for (let i = 0; i < steps; i++) {
+          const a = (i / steps) * TAU;
           const nx = x + Math.cos(a) * rr;
           const nz = z + Math.sin(a) * rr;
-          if (nav.isWalkable(nx, nz)) return { x: nx, z: nz };
+          const c = nav.colOf(nx);
+          const r = nav.rowOf(nz);
+          if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+          if (nav.walkable[r * cols + c] !== 1) continue;
+          return { x: minX + (c + 0.5) * cell, z: minZ + (r + 0.5) * cell };
         }
       }
-      return { x, z };
+      // 全图兜底：找任意可行走单元
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (nav.walkable[r * cols + c] === 1) {
+            return { x: minX + (c + 0.5) * cell, z: minZ + (r + 0.5) * cell };
+          }
+        }
+      }
+      return { x: 0, z: 0 };
     },
     pathClear(ax, az, bx, bz) {
       const dx = bx - ax; const dz = bz - az;
@@ -1026,11 +1162,6 @@ function buildNav(world) {
   return nav;
 }
 
-/** 采集点是否落在水里（建筑/车点/锚点/物资点排除）。 */
-function dryLand(bd, x, z) {
-  return !bd.inWater(x, z);
-}
-
 /** 水域先行注册（建筑/树木/物资点需避开深水）。 */
 function applyWaters(bd, def) {
   if (def.id === 'qinglan') {
@@ -1039,9 +1170,11 @@ function applyWaters(bd, def) {
   } else if (def.id === 'chisha') {
     bd.waters.push({ x: 122, z: 8, r: 12, kind: 'oasis', solid: true });
   } else if (def.id === 'baiye') {
+    // 冰湖：可走但减速（isWater 语义 = 特殊地形）
     bd.waters.push({ x: 48, z: 118, r: 40, kind: 'ice', solid: false, slippery: true });
-    bd.waters.push({ x: 96, z: -96, r: 34, kind: 'harbor', solid: true });
-    bd.waters.push({ x: 140, z: -70, r: 20, kind: 'harbor', solid: true });
+    // 港湾：贴东南海岸，港区陆地在西北侧
+    bd.waters.push({ x: 136, z: -126, r: 46, kind: 'harbor', solid: true });
+    bd.waters.push({ x: 70, z: -150, r: 30, kind: 'harbor', solid: true });
   }
 }
 
@@ -1221,6 +1354,67 @@ function rockRingSkip(bd, rng, cx, cz, radius, count, thick, gapWidth) {
 
 // __DOOR_CLEAR__
 
+/** 保证每栋建筑内部中心有物资点；超出上限时先丢弃 tier1 野外点。 */
+function ensureBuildingLoot(bd) {
+  const has = new Set();
+  const inBuilding = (l, b) => Math.abs(l.x - b.x) < b.w * 0.5 - 0.2 && Math.abs(l.z - b.z) < b.d * 0.5 - 0.2;
+  const need = [];
+  for (let i = 0; i < bd.buildings.length; i++) {
+    const b = bd.buildings[i];
+    let found = false;
+    for (let j = 0; j < bd.lootSpots.length; j++) {
+      if (inBuilding(bd.lootSpots[j], b)) { found = true; break; }
+    }
+    if (!found) need.push(b);
+  }
+  if (!need.length) return;
+  // 先删除野外 tier1 稀疏点腾出配额
+  let drop = bd.lootSpots.length + need.length - MAX_LOOT_SPOTS;
+  for (let i = bd.lootSpots.length - 1; i >= 0 && drop > 0; i--) {
+    const l = bd.lootSpots[i];
+    let inside = false;
+    for (let j = 0; j < bd.buildings.length; j++) {
+      if (inBuilding(l, bd.buildings[j])) { inside = true; break; }
+    }
+    if (!inside && l.tier === 1) { bd.lootSpots.splice(i, 1); drop--; }
+  }
+  for (const b of need) {
+    if (bd.lootSpots.length >= MAX_LOOT_SPOTS) bd.lootSpots.pop();
+    bd.lootSpots.push({ x: b.x, z: b.z, tier: clamp(b.tier, 1, 3) });
+  }
+  has.clear();
+}
+
+/** 三图地形差异统计（写入 world.stats 供诊断/测试/客户端小地图使用）。 */
+function worldStats(def, bd) {
+  const kinds = {};
+  for (let i = 0; i < bd.obstacles.length; i++) {
+    const k = bd.obstacles[i].kind;
+    kinds[k] = (kinds[k] || 0) + 1;
+  }
+  const tiers = [0, 0, 0, 0];
+  for (let i = 0; i < bd.lootSpots.length; i++) tiers[bd.lootSpots[i].tier]++;
+  let tileSum = 0;
+  for (let i = 0; i < bd.buildings.length; i++) tileSum += bd.buildings[i].w * bd.buildings[i].d;
+  return {
+    mapId: def.id,
+    buildings: bd.buildings.length,
+    obstacles: bd.obstacles.length,
+    trees: bd.trees.length,
+    props: bd.props.length,
+    roads: bd.roads.length,
+    waters: bd.waters.length,
+    loot: bd.lootSpots.length,
+    cars: bd.carSpots.length,
+    anchors: bd.spawnAnchors.length,
+    regions: bd.regions.length,
+    kinds,
+    lootTiers: { tier1: tiers[1], tier2: tiers[2], tier3: tiers[3] },
+    buildingArea: Math.round(tileSum),
+    signature: `${bd.buildings.length}/${bd.obstacles.length}/${bd.waters.length}/${bd.roads.length}/${kinds.container || 0}/${kinds.rock || 0}`,
+  };
+}
+
 /** 由 Builder 产物组装 World 对象。 */
 function inWaterShape(w, x, z, pad = 0) {
   if (w.r) return (x - w.x) * (x - w.x) + (z - w.z) * (z - w.z) <= (w.r + pad) * (w.r + pad);
@@ -1290,11 +1484,20 @@ function assembleWorld(def, bd) {
     },
   };
   world.nav = buildNav(world);
+  world.stats = worldStats(def, bd);
   return world;
 }
 
-/** 生成指定地图（不缓存）。 */
-export function makeWorldUncached(mapId) {
+/** 生成指定地图（不缓存）。timings 可选：若传入对象，会写入各阶段耗时（ms）。 */
+export function makeWorldUncached(mapId, timings = null) {
+  const now = () => (timings ? Date.now() : 0);
+  let tPrev = now();
+  const mark = (key) => {
+    if (!timings) return;
+    const t = Date.now();
+    timings[key] = Math.round(t - tPrev);
+    tPrev = t;
+  };
   const def = MAPS[mapId] || MAPS.qinglan;
   const bd = new Builder(def);
   const rng = bd.rng;
@@ -1309,6 +1512,7 @@ export function makeWorldUncached(mapId) {
   fillCars(bd, rng);
   fillAnchors(bd, rng);
   bd.commitTrees();
+  mark('layout');
   // 兜底：先补足建筑与树（门洞清障后可能不足），再统一清理门口走廊
   const targetB = (MAP_TARGETS[def.id] && MAP_TARGETS[def.id].buildings) || MIN_BUILDINGS;
   const targetT = (MAP_TARGETS[def.id] && MAP_TARGETS[def.id].trees) || MIN_TREES;
@@ -1328,6 +1532,9 @@ export function makeWorldUncached(mapId) {
   }
   // 门洞净空：移除门口走廊/门内的树、岩石、箱子，保证 ≥1.6m 净宽
   clearDoorwayObstacles(bd);
+  mark('clear');
+  // 保证每栋建筑内部中心都有物资点（数量上限 320，必要时挤掉野外低 tier 点）
+  ensureBuildingLoot(bd);
   // 若某次清障后仍有建筑入口被别处残留堵住，再做一轮更宽的清理
   if (bd.trees.length < MIN_TREES) {
     for (let i = 0; i < 4000 && bd.trees.length < MIN_TREES; i++) {
@@ -1336,7 +1543,10 @@ export function makeWorldUncached(mapId) {
       bd.tree(Math.cos(a) * rr, Math.sin(a) * rr, randInt(rng, 0, 2));
     }
   }
-  return assembleWorld(def, bd);
+  const world = assembleWorld(def, bd);
+  mark('assemble');
+  if (timings) timings.total = Math.round(timings.layout + timings.clear + timings.assemble);
+  return world;
 }
 
 /** 门洞净空：清掉门口走廊与门内的树/岩石/箱子等，保证每栋建筑都能走进去。 */
@@ -1387,5 +1597,53 @@ export function makeWorld(mapId = 'qinglan') {
   worldCache.set(id, world);
   return world;
 }
+
+// ---------------------------------------------------------------------------
+// 向后兼容导出（0.2.0 接口）：默认地图 + 顶层碰撞函数
+// ---------------------------------------------------------------------------
+/** 默认地图（青岚岛）世界实例。 */
+export const MAP = makeWorld('qinglan');
+export const REGIONS = MAP.regions;
+export const MAP_SEED = MAPS.qinglan.seed;
+export const obstaclesNear = (x1, z1, x2, z2) => {
+  const out = [];
+  for (let i = 0; i < MAP.obstacles.length; i++) {
+    const o = MAP.obstacles[i];
+    if (o.x + o.w * 0.5 < x1 || o.x - o.w * 0.5 > x2) continue;
+    if (o.z + o.d * 0.5 < z1 || o.z - o.d * 0.5 > z2) continue;
+    out.push(o);
+  }
+  return out;
+};
+export const blocked = (x, z, r = PLAYER_RADIUS) => MAP.blocked(x, z, r);
+export const moveBody = (body, dx, dz, r = PLAYER_RADIUS) => MAP.moveBody(body, dx, dz, r);
+export const wallDistance = (x, z, dx, dz, range = 120) => MAP.wallDistance(x, z, dx, dz, range);
+export const clearLine = (a, b) => MAP.clearLine(a, b);
+export const isWater = (x, z) => MAP.isWater(x, z);
+export const segmentRect = (ax, az, bx, bz, o) => {
+  const dx = bx - ax;
+  const dz = bz - az;
+  let lo = 0;
+  let hi = 1;
+  const x0 = o.x - o.w * 0.5;
+  const x1 = o.x + o.w * 0.5;
+  if (Math.abs(dx) < 1e-8) { if (ax < x0 || ax > x1) return null; } else {
+    const a = (x0 - ax) / dx;
+    const b = (x1 - ax) / dx;
+    lo = Math.max(lo, Math.min(a, b));
+    hi = Math.min(hi, Math.max(a, b));
+    if (lo > hi) return null;
+  }
+  const z0 = o.z - o.d * 0.5;
+  const z1 = o.z + o.d * 0.5;
+  if (Math.abs(dz) < 1e-8) { if (az < z0 || az > z1) return null; } else {
+    const a = (z0 - az) / dz;
+    const b = (z1 - az) / dz;
+    lo = Math.max(lo, Math.min(a, b));
+    hi = Math.min(hi, Math.max(a, b));
+    if (lo > hi) return null;
+  }
+  return lo;
+};
 
 export default makeWorld;

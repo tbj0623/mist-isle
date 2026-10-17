@@ -454,6 +454,13 @@ export function toast(message, ms = 2400) {
 }
 
 // ── 07 · 通用小组件 ─────────────────────────────────────────────────────────
+/** 统一交互反馈：点击音效 + 可选 toast。所有 onclick 都应调用。 */
+function playAudio(name, opts) {
+  try { app?.audio?.play?.(name || 'ui_click', opts || {}); } catch { /* 音频未就绪 */ }
+}
+function feedback(name) {
+  playAudio(name || 'ui_click');
+}
 function iconBtn(label, iconName, handler, extraClass = '') {
   const btn = h('button', `icon-btn ${extraClass}`.trim());
   btn.type = 'button';
@@ -492,6 +499,53 @@ function emptyState(text) {
 }
 /** 局外按钮的稳定 id：id="btn-<action>"（契约 §11）。 */
 function btnId(action) { return `btn-${action}`; }
+
+/**
+ * 统一屏幕骨架：
+ *   section.screen[data-screen]
+ *     div.app-bar.topbar（二级页顶栏）
+ *     main.screen-body
+ *       div.screen-head
+ *       div.screen-main(.single|.play-main…)   ← 恰好两个子列：内容列 + 右栏
+ *         div.screen-main-content
+ *         aside.screen-side
+ *       footer.screen-foot
+ * `.screen-main` 在样式表里是 grid（min-height:0），作为 .screen-body 的 flex 子项
+ * 必须禁止收缩，否则内容高度会被压成 0 导致层叠错位。
+ */
+function screenShell({ name, head, main, side, foot, mainClass = '', bodyClass = '' }) {
+  const el = makeScreen(name);
+  const chrome = makeChrome(name);
+  el.bar = chrome;
+  el.append(chrome);
+  const body = h('div', `screen-body ${bodyClass}`.trim());
+  if (head) body.append(head);
+  const mainEl = h('div', `screen-main ${side ? '' : 'single'} ${mainClass}`.trim());
+  mainEl.style.flex = '0 0 auto';
+  const content = h('div', 'screen-main-content stack-lg');
+  content.style.minWidth = '0';
+  if (main) content.append(main);
+  mainEl.append(content);
+  if (side) mainEl.append(side);
+  body.append(mainEl);
+  if (foot) body.append(foot);
+  el.append(body);
+  el.bodyEl = body;
+  el.mainEl = mainEl;
+  el.contentEl = content;
+  return el;
+}
+
+/** 二级页统一标题区。 */
+function screenHead(eyebrow, title, desc, extra) {
+  const head = h('div', 'screen-head');
+  const info = h('div', 'grow');
+  info.append(h('div', 'eyebrow', eyebrow), h('h2', 'title-lg', title));
+  if (desc) info.append(h('p', 'muted', desc));
+  head.append(info);
+  if (extra) head.append(extra);
+  return head;
+}
 
 // ── 08 · 主菜单 ─────────────────────────────────────────────────────────────
 const HOME_NAV_IDS = {
@@ -535,7 +589,7 @@ function buildHome() {
     btn.dataset.nav = item.id;
     btn.id = HOME_NAV_IDS[item.id] || `nav-${item.id}`;
     btn.setAttribute('aria-label', `${item.name} · ${item.desc}`);
-    btn.append(h('b', null, item.name), h('small', null, item.desc), h('span', 'arrow', '↗'));
+    btn.append(h('b', null, item.name), h('small', null, `${item.en} · ${item.desc}`), h('span', 'arrow', '↗'));
     const dot = h('span', 'badge dot');
     dot.dataset.badge = item.id;
     dot.style.display = 'none';
@@ -585,16 +639,9 @@ const MODE_LIST = [
 const uiState = { mode: 'squad', mapId: 'qinglan', difficulty: 'veteran', storeTab: 'character', codexTab: 'weapon' };
 
 function buildPlay() {
-  const el = makeScreen('play');
-  const bar = makeChrome('play');
-  el.bar = bar;
-  el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head');
-  head.append(h('div', 'eyebrow', 'DEPLOYMENT'), h('h2', 'title-lg', '选择你的战场'), h('p', 'muted', '行动开始前，确认模式、地图与敌人强度。'));
-  body.append(head);
+  const head = screenHead('DEPLOYMENT', '选择你的战场', '确认模式、地图与敌人强度后出发。空位由 AI 补满。');
 
-  const main = h('div', 'screen-main play-main');
+  const content = h('div', 'stack-lg');
   const modes = h('div', 'mode-grid');
   modes.setAttribute('role', 'group');
   modes.setAttribute('aria-label', '对局模式');
@@ -606,40 +653,41 @@ function buildPlay() {
     btn.setAttribute('aria-label', `${mode.name}，${mode.meta}`);
     const ic = h('span', 'mode-icon');
     ic.append(icon(mode.id === 'solo' ? 'target' : mode.id === 'squad' ? 'users' : mode.id === 'horde' ? 'waves' : 'gamepad', 22));
-    const info = h('span', 'mode-body');
-    info.append(h('b', 'mode-name', mode.name), h('span', 'mode-en', mode.en), h('small', 'mode-desc', mode.desc));
-    btn.append(ic, info, h('span', 'mode-meta muted', mode.meta));
-    btn.addEventListener('click', () => { uiState.mode = mode.id; renderPlaySelection(); });
+    btn.append(ic, h('b', 'mode-name', mode.name), h('small', 'mode-desc', mode.desc), h('span', 'mode-meta', mode.meta));
+    btn.addEventListener('click', () => { uiState.mode = mode.id; renderPlaySelection(); playAudio('ui_click'); });
     modes.append(btn);
   }
-  main.append(modes);
+  content.append(modes);
 
   const maps = h('div', 'map-row');
   maps.setAttribute('role', 'group');
   maps.setAttribute('aria-label', '地图选择');
+  const WEATHER_NAME = { clear: '晴朗', rain: '阵雨', fog: '浓雾', sandstorm: '沙暴', snow: '落雪' };
+  const TIME_NAME = { day: '白昼', dusk: '黄昏', night: '长夜' };
   for (const map of mapList()) {
     const btn = h('button', `map-pick card ${uiState.mapId === map.id ? 'active' : ''}`.trim());
     btn.type = 'button';
     btn.dataset.map = map.id;
     btn.id = `map-${map.id}`;
-    btn.setAttribute('aria-label', `${map.name}，难度 ${map.difficulty}/3`);
-    const art = h('div', `map-art map-art-${map.id}`);
-    art.append(h('span', 'map-art-grid'));
-    const body2 = h('div', 'map-body');
-    const titleRow = h('div', 'row');
-    titleRow.append(h('b', 'map-name', map.name), diffDots(map.difficulty || 1));
-    body2.append(titleRow, h('small', 'map-sub muted', map.subtitle || map.en || ''));
-    const desc = h('p', 'map-desc', map.description || '');
+    btn.setAttribute('aria-label', `${map.name}，难度 ${map.difficulty}/3，${map.description || ''}`);
+    // 地图缩略完全由 CSS 依据 data-map 绘制（.map-art::after 岛屿剪影）
+    btn.append(h('div', 'map-art'));
+    const info = h('div', 'map-info');
+    info.append(h('b', 'map-name', map.name), h('small', 'map-sub', map.en || ''));
+    info.append(h('div', 'map-desc', map.description || ''));
     const tags = h('div', 'map-tags');
-    if (map.weather) tags.append(h('span', 'chip chip-xs', `天气 · ${map.weather}`));
-    if (map.timeOfDay) tags.append(h('span', 'chip chip-xs', `时段 · ${map.timeOfDay}`));
-    tags.append(h('span', 'chip chip-xs', `${map.regions?.length || 9} 个区域`));
-    body2.append(desc, tags);
-    btn.append(art, body2);
-    btn.addEventListener('click', () => { uiState.mapId = map.id; renderPlaySelection(); });
+    if (map.weather) tags.append(h('span', 'chip', `天气 · ${WEATHER_NAME[map.weather] || map.weather}`));
+    if (map.timeOfDay) tags.append(h('span', 'chip', `时段 · ${TIME_NAME[map.timeOfDay] || map.timeOfDay}`));
+    tags.append(h('span', 'chip', `${map.regions?.length || 9} 区域`));
+    info.append(tags);
+    const diff = h('div', 'map-diff');
+    diff.append(h('small', 'muted', '难度'), diffDots(map.difficulty || 1));
+    info.append(diff);
+    btn.append(info);
+    btn.addEventListener('click', () => { uiState.mapId = map.id; renderPlaySelection(); playAudio('ui_click'); });
     maps.append(btn);
   }
-  main.append(maps);
+  content.append(maps);
 
   const diffRow = h('div', 'difficulty-row');
   diffRow.append(h('span', 'field-label', '敌人强度'));
@@ -652,11 +700,11 @@ function buildPlay() {
     btn.dataset.diff = key;
     btn.id = `diff-${key}`;
     btn.title = def.desc || '';
-    btn.addEventListener('click', () => { uiState.difficulty = key; renderPlaySelection(); });
+    btn.addEventListener('click', () => { uiState.difficulty = key; renderPlaySelection(); playAudio('ui_click'); });
     diffGroup.append(btn);
   }
   diffRow.append(diffGroup, h('small', 'diff-desc muted', DIFFICULTY[uiState.difficulty]?.desc || ''));
-  main.append(diffRow);
+  content.append(diffRow);
 
   const actions = h('div', 'play-actions');
   const start = h('button', 'btn btn-primary btn-lg');
@@ -668,40 +716,53 @@ function buildPlay() {
   online.type = 'button';
   online.id = 'btn-online';
   online.append(icon('wifi'), h('span', null, '联机组队'));
-  online.addEventListener('click', () => showOnlineDialog());
+  online.addEventListener('click', () => { playAudio('ui_click'); showOnlineDialog(); });
   actions.append(start, online);
-  main.append(actions);
-  body.append(main);
+  content.append(actions);
 
   const side = h('aside', 'screen-side play-side');
   const squadPanel = h('section', 'panel');
-  squadPanel.append(h('div', 'panel-head', '小队'), h('p', 'muted panel-note', '空位将在开局时由 AI 补满。'));
+  const squadHead = h('div', 'panel-head');
+  squadHead.append(h('h3', null, '小队'), h('small', 'muted', '4 人编制'));
+  squadPanel.append(squadHead);
+  const squadBody = h('div', 'panel-body');
   const grid = h('div', 'squad-grid');
   for (let i = 0; i < SQUAD_SIZE; i++) {
     const slot = h('div', 'squad-slot empty');
-    slot.append(h('span', 'squad-slot-idx', `0${i + 1}`), h('span', 'squad-slot-name', i === 0 ? '你' : '等待加入'));
+    slot.append(h('b', null, i === 0 ? '你' : '等待'), h('small', 'muted', `0${i + 1}`));
     grid.append(slot);
   }
-  squadPanel.append(grid);
+  squadBody.append(grid, h('p', 'panel-note', '空位将在开局时由 AI 补满。'));
+  squadPanel.append(squadBody);
+
   const intel = h('section', 'panel');
-  intel.append(h('div', 'panel-head', '战场情报'));
+  const intelHead = h('div', 'panel-head');
+  intelHead.append(h('h3', null, '战场情报'));
+  intel.append(intelHead);
+  const intelBody = h('div', 'panel-body');
   const stats = h('div', 'stat-grid');
-  for (const [label, value] of [['战局容量', '64 席'], ['小队编制', '4 人'], ['安全区阶段', '5 阶段'], ['预计时长', '6 – 10 分钟']]) {
+  for (const [label, value] of [['战局容量', '64 席'], ['小队编制', '4 人'], ['安全区', '5 阶段'], ['预计时长', '6–10 分']]) {
     const stat = h('div', 'stat');
     stat.append(h('small', null, label), h('b', null, value));
     stats.append(stat);
   }
-  intel.append(stats);
-  const rules = h('section', 'panel panel-tips');
-  rules.append(h('div', 'panel-head', '行动要点'));
-  const ul = h('ul', 'tip-list');
+  intelBody.append(stats);
+  intel.append(intelBody);
+
+  const tips = h('section', 'panel');
+  const tipHead = h('div', 'panel-head');
+  tipHead.append(h('h3', null, '行动要点'));
+  tips.append(tipHead);
+  const tipBody = h('div', 'panel-body panel-tips');
   for (const tip of ['落地先找武器与护甲，再决定转移路线。', '安全区收缩时优先占据高地与建筑。', '队友倒地后 30 秒内完成救援。', '空投物资稀有，但也是最好的诱饵。']) {
-    ul.append(h('li', null, tip));
+    const row = h('p', 'tip-row');
+    row.append(h('span', 'tip-dot'), h('span', null, tip));
+    tipBody.append(row);
   }
-  rules.append(ul);
-  side.append(squadPanel, intel, rules);
-  body.append(side);
-  el.append(body);
+  tips.append(tipBody);
+  side.append(squadPanel, intel, tips);
+
+  const el = screenShell({ name: 'play', head, main: content, side, mainClass: 'play-main' });
   return el;
 }
 
@@ -746,17 +807,11 @@ function currentAttachment(slotId) {
 }
 
 function buildLoadout() {
-  const el = makeScreen('loadout');
-  const bar = makeChrome('loadout');
-  el.bar = bar;
-  el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head');
-  head.append(h('div', 'eyebrow', 'LOADOUT'), h('h2', 'title-lg', '出战装备'), h('p', 'muted', '武器按等级解锁；配件可从战场拾取，装备栏决定开局携带。'));
-  body.append(head);
+  const head = screenHead('LOADOUT', '出战装备', '武器按等级解锁；配件可在战场拾取，装备栏决定开局携带。');
 
-  const main = h('div', 'screen-main loadout-main');
-  const slotsRow = h('div', 'weapon-slots');
+  const content = h('div', 'stack-lg');
+  // .slots-row 是样式表里的武器槽容器
+  const slotsRow = h('div', 'slots-row weapon-slots');
   for (const def of SLOT_DEFS) {
     const card = h('button', 'slot weapon-slot');
     card.type = 'button';
@@ -764,37 +819,43 @@ function buildLoadout() {
     card.id = `loadout-slot-${def.key}`;
     card.setAttribute('aria-label', `${def.name}选择`);
     const art = h('div', 'slot-art');
-    const name = h('b', 'item-name');
+    const name = h('b', null, def.name);
     const sub = h('small', 'muted');
-    const info = h('span', 'slot-info');
+    const info = h('span', 'slot-body slot-info');
     info.append(name, sub);
-    card.append(h('span', 'slot-label', def.name), art, info);
-    card.addEventListener('click', () => pickWeaponFor(def.key));
+    card.append(h('span', 'keycap', def.key === 'primary' ? '1' : '2'), art, info);
+    card.addEventListener('click', () => { playAudio('ui_click'); pickWeaponFor(def.key); });
     slotsRow.append(card);
   }
-  main.append(slotsRow);
+  content.append(slotsRow);
 
   const attachPanel = h('section', 'panel');
-  attachPanel.append(h('div', 'panel-head', '配件'));
-  const attachGrid = h('div', 'attachment-grid');
+  const attachHead = h('div', 'panel-head');
+  attachHead.append(h('h3', null, '配件'), h('small', 'muted', '主武器'));
+  attachPanel.append(attachHead);
+  const attachGrid = h('div', 'slots-row attachment-grid');
   for (const slot of ATTACH_SLOTS) {
     const btn = h('button', 'slot slot-sm');
     btn.type = 'button';
     btn.dataset.attach = slot.id;
     btn.id = `attach-${slot.id}`;
     btn.setAttribute('aria-label', `${slot.name}槽`);
-    btn.append(h('small', 'muted', slot.name));
-    const value = h('b', null, '空');
-    btn.append(value);
-    btn.addEventListener('click', () => pickAttachment(slot.id));
+    const info = h('span', 'slot-body');
+    info.append(h('small', 'muted', slot.name), h('b', null, '空'));
+    btn.append(info);
+    btn.addEventListener('click', () => { playAudio('ui_click'); pickAttachment(slot.id); });
     attachGrid.append(btn);
   }
-  attachPanel.append(attachGrid, h('p', 'field-help muted', '点击槽位在已装配件中切换；拾取的新配件会自动替换低阶配件。'));
-  main.append(attachPanel);
+  const attachBody = h('div', 'panel-body');
+  attachBody.append(attachGrid, h('p', 'field-help', '点击槽位在已装配件中切换；拾取的新配件会自动替换低阶配件。'));
+  attachPanel.append(attachBody);
+  content.append(attachPanel);
 
-  const consumables = h('section', 'panel');
-  consumables.append(h('div', 'panel-head', '消耗品'));
-  const chipRow = h('div', 'chip-row');
+  const chipPanel = h('section', 'panel');
+  const chipHead = h('div', 'panel-head');
+  chipHead.append(h('h3', null, '消耗品'), h('small', 'muted', '开局携带一种'));
+  chipPanel.append(chipHead);
+  const chipBody = h('div', 'chip-row panel-body');
   for (const id of CONSUMABLE_LIST) {
     const def = itemTable()[id] || { name: id };
     const btn = h('button', 'chip');
@@ -804,14 +865,16 @@ function buildLoadout() {
     btn.setAttribute('aria-label', `${def.name}，开局携带`);
     btn.append(h('b', null, def.name), h('small', 'muted', def.desc || ''));
     btn.addEventListener('click', () => equipConsumable(id));
-    chipRow.append(btn);
+    chipBody.append(btn);
   }
-  consumables.append(chipRow);
-  main.append(consumables);
+  chipPanel.append(chipBody);
+  content.append(chipPanel);
 
-  const throwables = h('section', 'panel');
-  throwables.append(h('div', 'panel-head', '投掷物'));
-  const throwRow = h('div', 'chip-row');
+  const throwPanel = h('section', 'panel');
+  const throwHead = h('div', 'panel-head');
+  throwHead.append(h('h3', null, '投掷物'), h('small', 'muted', '开局携带一种'));
+  throwPanel.append(throwHead);
+  const throwBody = h('div', 'chip-row panel-body');
   for (const id of THROWABLE_LIST) {
     const def = itemTable()[id] || { name: id };
     const btn = h('button', 'chip throwable-chip');
@@ -819,40 +882,42 @@ function buildLoadout() {
     btn.dataset.throwable = id;
     btn.id = `throwable-${id}`;
     btn.setAttribute('aria-label', `${def.name}，开局携带`);
-    btn.append(icon('fire', 16), h('b', null, def.name), h('small', 'muted', def.desc || ''));
+    btn.append(h('b', null, def.name), h('small', 'muted', def.desc || ''));
     btn.addEventListener('click', () => equipThrowable(id));
-    throwRow.append(btn);
+    throwBody.append(btn);
   }
-  throwables.append(throwRow);
-  main.append(throwables);
+  throwPanel.append(throwBody);
+  content.append(throwPanel);
 
   const skins = h('section', 'panel');
-  skins.append(h('div', 'panel-head', '角色外观'));
-  const skinGrid = h('div', 'skin-grid');
+  const skinHead = h('div', 'panel-head');
+  skinHead.append(h('h3', null, '角色外观'), h('small', 'muted', '仅影响外观'));
+  skins.append(skinHead);
+  const skinGrid = h('div', 'skin-grid panel-body');
   skinGrid.id = 'skin-grid';
   skins.append(skinGrid);
-  main.append(skins);
-  body.append(main);
+  content.append(skins);
 
   const side = h('aside', 'screen-side loadout-side');
-  const preview = h('section', 'panel preview-panel');
-  preview.append(h('div', 'panel-head', '预览'));
+  const preview = h('section', 'panel');
+  const previewHead = h('div', 'panel-head');
+  previewHead.append(h('h3', null, '预览'), h('small', 'muted', '武器与皮肤'));
+  preview.append(previewHead);
   const stage = h('div', 'preview-stage');
   stage.id = 'preview-stage';
-  const stageHint = h('div', 'preview-hint');
-  stageHint.append(icon('eye', 26), h('small', 'muted', '武器与皮肤实时预览'));
-  stage.append(stageHint);
-  preview.append(stage, h('div', 'preview-label', '当前外观'));
+  stage.append(h('div', 'preview-label', '当前外观'));
+  preview.append(stage);
   side.append(preview);
   const statsPanel = h('section', 'panel');
-  statsPanel.append(h('div', 'panel-head', '主武器数据'));
-  const statsBox = h('div', 'stat-rows');
+  const statsHead = h('div', 'panel-head');
+  statsHead.append(h('h3', null, '主武器数据'));
+  statsPanel.append(statsHead);
+  const statsBox = h('div', 'loaded-stats panel-body');
   statsBox.id = 'loadout-stats';
   statsPanel.append(statsBox);
   side.append(statsPanel);
-  body.append(side);
-  el.append(body);
-  return el;
+
+  return screenShell({ name: 'loadout', head, main: content, side, mainClass: 'loadout-main' });
 }
 
 function renderLoadout() {
@@ -1043,42 +1108,33 @@ function setAttachment(slotId, attachmentId) {
 
 // ── 11 · 商店 ───────────────────────────────────────────────────────────────
 function buildStore() {
-  const el = makeScreen('store');
-  const bar = makeChrome('store');
-  el.bar = bar;
-  el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head row');
-  const headText = h('div', 'grow');
-  headText.append(h('div', 'eyebrow amber', 'STORE'), h('h2', 'title-lg', '外观商店'), h('p', 'muted', '所有外观仅影响视觉，不影响任何战斗属性。'));
-  head.append(headText);
   const wallet = h('div', 'wallet');
-  wallet.append(icon('coin', 18), h('b', 'js-credits', '0'), h('small', 'muted', '信用点'));
-  head.append(wallet);
-  body.append(head);
+  wallet.append(h('span', 'currency', '信用点'), h('b', 'js-credits', '0'));
+  const head = screenHead('STORE', '外观商店', '所有外观仅影响视觉，不影响任何战斗属性。', wallet);
 
   const tabs = h('div', 'tabs store-tabs');
   tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', '商店分类');
   for (const tab of storeTabs) {
     const btn = h('button', 'tab', tab.name);
     btn.type = 'button';
     btn.dataset.tab = tab.id;
     btn.id = `store-tab-${tab.id}`;
     btn.setAttribute('role', 'tab');
-    btn.addEventListener('click', () => { uiState.storeTab = tab.id; renderStore(); });
+    btn.addEventListener('click', () => { uiState.storeTab = tab.id; playAudio('ui_click'); renderStore(); });
     tabs.append(btn);
   }
-  body.append(tabs);
 
   const grid = h('div', 'store-grid');
   grid.id = 'store-grid';
-  body.append(grid);
 
-  const note = h('footer', 'screen-foot');
-  note.append(h('span', 'muted', '信用点通过对局、任务与成就获得。'), h('span', 'version', `v${VERSION}`));
-  body.append(note);
-  el.append(body);
-  return el;
+  const content = h('div', 'stack-lg');
+  content.append(tabs, grid);
+
+  const foot = h('footer', 'screen-foot');
+  foot.append(h('span', 'muted', '信用点通过对局、任务与成就获得。'), h('span', 'version', `v${VERSION}`));
+
+  return screenShell({ name: 'store', head, main: content, foot });
 }
 
 function skinKind(skin) {
@@ -1181,45 +1237,38 @@ function countdownText(ms) {
 }
 
 function buildMissions() {
-  const el = makeScreen('missions');
-  const bar = makeChrome('missions');
-  el.bar = bar;
-  el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head row');
-  const headText = h('div', 'grow');
-  headText.append(h('div', 'eyebrow', 'MISSIONS'), h('h2', 'title-lg', '任务简报'), h('p', 'muted', '完成任务获取额外经验与信用点。每日任务每天 0 点刷新。'));
-  head.append(headText);
   const countdown = h('div', 'countdown');
   countdown.id = 'mission-countdown';
   countdown.append(icon('clock', 16), h('span', null, '—'));
-  head.append(countdown);
-  body.append(head);
+  const head = screenHead('MISSIONS', '任务简报', '完成任务获取额外经验与信用点。每日任务每天 0 点刷新。', countdown);
 
-  const groups = h('div', 'mission-groups');
+  const groups = h('div', 'mission-groups stack-lg');
   for (const [key, title, hint] of [['daily', '每日任务', '每天 0 点刷新 · 共 3 个'], ['weekly', '每周任务', '每周一 0 点刷新 · 共 3 个']]) {
     const section = h('section', 'panel mission-group');
     section.dataset.group = key;
-    const groupHead = h('div', 'panel-head row');
-    groupHead.append(h('b', null, title), h('span', 'spacer'), h('small', 'muted', hint));
-    const list = h('div', 'mission-list');
+    const groupHead = h('div', 'panel-head');
+    groupHead.append(h('h3', null, title), h('span', 'spacer'), h('small', null, hint));
+    const list = h('div', 'mission-list panel-body');
     list.id = `mission-list-${key}`;
     section.append(groupHead, list);
     groups.append(section);
   }
-  body.append(groups);
 
-  const achTeaser = h('section', 'panel');
-  achTeaser.append(h('div', 'panel-head', '成就进度'));
-  const teaser = h('p', 'muted', '成就进度在「生涯」页面查看并领取奖励。');
+  const achPanel = h('section', 'panel');
+  const achHead = h('div', 'panel-head');
+  achHead.append(h('h3', null, '成就进度'), h('span', 'spacer'));
   const go = h('button', 'btn btn-ghost btn-sm', '前往生涯');
   go.type = 'button';
   go.id = 'btn-go-career';
-  go.addEventListener('click', () => openScreen('career'));
-  achTeaser.append(teaser, go);
-  body.append(achTeaser);
-  el.append(body);
-  return el;
+  go.addEventListener('click', () => { playAudio('ui_click'); openScreen('career'); });
+  achHead.append(go);
+  const achBody = h('div', 'panel-body');
+  achBody.append(h('p', 'muted', '成就进度在「生涯」页面查看并领取奖励。'));
+  achPanel.append(achHead, achBody);
+
+  const content = h('div', 'stack-lg');
+  content.append(groups, achPanel);
+  return screenShell({ name: 'missions', head, main: content });
 }
 
 function renderMissions() {
@@ -1319,28 +1368,25 @@ function buildCodex() {
   const bar = makeChrome('codex');
   el.bar = bar;
   el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head');
-  head.append(h('div', 'eyebrow', 'CODEX'), h('h2', 'title-lg', '战场档案'), h('p', 'muted', '武器、配件、道具、地图与敌人的完整资料。点击卡片查看详情。'));
-  body.append(head);
+  const head = screenHead('CODEX', '战场档案', '武器、配件、道具、地图与敌人的完整资料。点击卡片查看详情。');
 
   const tabs = h('div', 'tabs codex-tabs');
   tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', '档案分类');
   for (const tab of codexTabs) {
     const btn = h('button', 'tab', tab.name);
     btn.type = 'button';
     btn.dataset.tab = tab.id;
     btn.id = `codex-tab-${tab.id}`;
     btn.setAttribute('role', 'tab');
-    btn.addEventListener('click', () => { uiState.codexTab = tab.id; renderCodex(); });
+    btn.addEventListener('click', () => { uiState.codexTab = tab.id; playAudio('ui_click'); renderCodex(); });
     tabs.append(btn);
   }
-  body.append(tabs);
   const grid = h('div', 'codex-grid');
   grid.id = 'codex-grid';
-  body.append(grid);
-  el.append(body);
-  return el;
+  const content = h('div', 'stack-lg');
+  content.append(tabs, grid);
+  return screenShell({ name: 'codex', head, main: content });
 }
 
 function codexEntries(kind) {
@@ -1447,43 +1493,38 @@ export function openCodexDetail(kind, id) {
 
 // ── 14 · 生涯 ───────────────────────────────────────────────────────────────
 function buildCareer() {
-  const el = makeScreen('career');
-  const bar = makeChrome('career');
-  el.bar = bar;
-  el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head');
-  head.append(h('div', 'eyebrow', 'CAREER'), h('h2', 'title-lg', '生涯档案'), h('p', 'muted', '你的每一场战斗都会记录在这里。'));
-  body.append(head);
+  const head = screenHead('CAREER', '生涯档案', '你的每一场战斗都会记录在这里。');
 
+  const content = h('div', 'stack-lg');
   const overview = h('section', 'panel career-head');
   overview.id = 'career-overview';
-  body.append(overview);
+  content.append(overview);
 
   const statPanel = h('section', 'panel');
-  statPanel.append(h('div', 'panel-head', '生涯统计'));
-  const statGrid = h('div', 'stat-grid career-stats');
+  const statHead = h('div', 'panel-head');
+  statHead.append(h('h3', null, '生涯统计'));
+  const statGrid = h('div', 'stat-grid career-stats panel-body');
   statGrid.id = 'career-stats';
-  statPanel.append(statGrid);
-  body.append(statPanel);
+  statPanel.append(statHead, statGrid);
+  content.append(statPanel);
 
   const achPanel = h('section', 'panel');
-  const achHead = h('div', 'panel-head row');
-  achHead.append(h('b', null, '成就'), h('span', 'spacer'), h('small', 'muted', '完成后可领取奖励'));
-  achPanel.append(achHead);
-  const achGrid = h('div', 'ach-grid');
+  const achHead = h('div', 'panel-head');
+  achHead.append(h('h3', null, '成就'), h('span', 'spacer'), h('small', null, '完成后可领取奖励'));
+  const achGrid = h('div', 'ach-grid panel-body');
   achGrid.id = 'achievement-grid';
-  achPanel.append(achGrid);
-  body.append(achPanel);
+  achPanel.append(achHead, achGrid);
+  content.append(achPanel);
 
   const historyPanel = h('section', 'panel');
-  historyPanel.append(h('div', 'panel-head', '最近战报'));
-  const history = h('div', 'match-history');
+  const hisHead = h('div', 'panel-head');
+  hisHead.append(h('h3', null, '最近战报'));
+  const history = h('div', 'match-history panel-body');
   history.id = 'match-history';
-  historyPanel.append(history);
-  body.append(historyPanel);
-  el.append(body);
-  return el;
+  historyPanel.append(hisHead, history);
+  content.append(historyPanel);
+
+  return screenShell({ name: 'career', head, main: content });
 }
 
 function renderCareer() {
@@ -1494,30 +1535,26 @@ function renderCareer() {
   const overview = document.getElementById('career-overview');
   if (overview) {
     clear(overview);
-    const badge = h('div', 'career-badge');
-    badge.append(icon('medal', 30));
-    const levelRing = h('div', 'level-ring level-ring-lg');
-    levelRing.append(h('b', null, fmtNum(info.level || playerLevel())), h('small', null, 'LV'));
-    const right = h('div', 'grow career-info');
-    const nameRow = h('div', 'row');
-    nameRow.append(h('b', 'career-name', OWNER_NAME), h('span', 'rank-tag', rank?.name || rank?.tier || '青铜'));
-    right.append(nameRow);
-    const xpText = h('small', 'muted');
-    setText(xpText, `经验 ${fmtNum(info.current || 0)} / ${fmtNum(info.needed || 0)}`);
-    const bar = h('div', 'progress progress-lg');
-    const fill = h('i');
+    const levelRing = h('div', 'level-ring');
     const pct = Math.max(0, Math.min(100, ((Number(info.current) || 0) / (Number(info.needed) || 1)) * 100));
+    levelRing.style.setProperty('--level-progress', pct.toFixed(1));
+    levelRing.append(h('b', null, fmtNum(info.level || playerLevel())), h('small', null, 'LV'));
+    const right = h('div', 'career-meta');
+    const nameRow = h('div', 'row');
+    nameRow.append(h('b', 'career-name', OWNER_NAME), h('span', 'badge', rank?.name || rank?.tier || '青铜'));
+    right.append(nameRow);
+    right.append(h('small', 'muted', `经验 ${fmtNum(info.current || 0)} / ${fmtNum(info.needed || 0)}`));
+    const bar = h('div', 'progress');
+    const fill = h('i');
     fill.style.width = `${pct.toFixed(1)}%`;
     bar.append(fill);
-    const rankBar = h('div', 'rank-progress');
-    const rp = h('div', 'progress');
+    right.append(bar);
+    const rankBar = h('div', 'progress');
     const rpf = h('i');
     rpf.style.width = `${Math.round((rank?.progress || 0) * 100)}%`;
-    rp.append(rpf);
-    const nextText = h('small', 'muted', `段位分 ${fmtNum(rating())} · 下一段位还需 ${fmtNum(Math.max(0, 240 - (rating() % 240)))}`);
-    rankBar.append(rp, nextText);
-    right.append(xpText, bar, rankBar);
-    overview.append(badge, levelRing, right);
+    rankBar.append(rpf);
+    right.append(h('small', 'muted', `段位分 ${fmtNum(rating())} · 距离下一段位 ${fmtNum(Math.max(0, 240 - (rating() % 240)))} 分`), rankBar);
+    overview.append(levelRing, right);
   }
 
   const stats = saveData().stats || {};
@@ -1652,40 +1689,41 @@ function buildSlider(value, min, max, step, onChange, label) {
 }
 
 function buildSettings() {
-  const el = makeScreen('settings');
-  const bar = makeChrome('settings');
-  el.bar = bar;
-  el.append(bar);
-  const body = h('div', 'screen-body');
-  const head = h('div', 'screen-head');
-  head.append(h('div', 'eyebrow', 'SETTINGS'), h('h2', 'title-lg', '作战设置'), h('p', 'muted', '调整后自动保存，下次启动沿用当前配置。'));
-  body.append(head);
-
+  const head = screenHead('SETTINGS', '作战设置', '调整后立即生效并自动保存，下次启动沿用当前配置。');
   const s = app?.settings || {};
   const columns = h('div', 'settings-columns');
 
-  const audioPanel = h('section', 'panel');
-  audioPanel.id = 'settings-audio';
-  audioPanel.append(h('div', 'panel-head row'));
-  audioPanel.querySelector('.panel-head').append(icon('volume', 18), h('b', null, '音频'));
+  const panel = (id, iconName, title, rows) => {
+    const p = h('section', 'panel');
+    p.id = id;
+    const ph = h('div', 'panel-head');
+    ph.append(icon(iconName, 18), h('h3', null, title));
+    const pb = h('div', 'panel-body');
+    for (const row of rows) pb.append(row);
+    p.append(ph, pb);
+    return p;
+  };
+
+  // ---- 音频（main.js 设置键：sfx / music，0..1） ----
   const soundRow = settingRow('游戏音效', '枪声、脚步与界面反馈');
-  const soundToggle = buildToggle(s.sound !== false, value => updateSetting('sound', value), '游戏音效');
+  const soundToggle = buildToggle((s.sfx ?? 0.75) > 0, value => updateSetting('sfx', value ? 0.75 : 0), '游戏音效');
   soundToggle.id = 'sound-toggle';
   soundRow.append(soundToggle);
   const musicRow = settingRow('背景音乐', '主菜单与战斗音乐');
-  const musicToggle = buildToggle(s.music !== false, value => updateSetting('music', value), '背景音乐');
+  const musicToggle = buildToggle((s.music ?? 0.38) > 0, value => updateSetting('music', value ? 0.38 : 0), '背景音乐');
   musicToggle.id = 'music-toggle';
   musicRow.append(musicToggle);
-  const volumeRow = settingRow('主音量', '');
-  const sfxVolume = buildSlider(Math.round((s.sfxVolume ?? 0.8) * 100), 0, 100, 5, value => updateSetting('sfxVolume', value / 100), '主音量');
-  volumeRow.append(sfxVolume);
-  audioPanel.append(soundRow, musicRow, volumeRow);
+  const sfxRow = settingRow('音效音量', '');
+  const sfxSlider = buildSlider(Math.round((s.sfx ?? 0.75) * 100), 0, 100, 5, value => updateSetting('sfx', value / 100), '音效音量');
+  sfxSlider.id = 'sfx-volume';
+  sfxRow.append(sfxSlider);
+  const musicVolRow = settingRow('音乐音量', '');
+  const musicSlider = buildSlider(Math.round((s.music ?? 0.38) * 100), 0, 100, 5, value => updateSetting('music', value / 100), '音乐音量');
+  musicSlider.id = 'music-volume';
+  musicVolRow.append(musicSlider);
+  const audioPanel = panel('settings-audio', 'volume', '音频', [soundRow, musicRow, sfxRow, musicVolRow]);
 
-  const displayPanel = h('section', 'panel');
-  displayPanel.id = 'settings-display';
-  const displayHead = h('div', 'panel-head row');
-  displayHead.append(icon('monitor', 18), h('b', null, '画面'));
-  displayPanel.append(displayHead);
+  // ---- 画面 ----
   const qualityRow = settingRow('画质预设', '低画质可显著提升中端机帧率');
   const qualitySelect = document.createElement('select');
   qualitySelect.id = 'quality';
@@ -1697,22 +1735,18 @@ function buildSettings() {
     qualitySelect.append(option);
   }
   qualitySelect.value = s.quality || 'balanced';
-  qualitySelect.addEventListener('change', () => updateSetting('quality', qualitySelect.value));
+  qualitySelect.addEventListener('change', () => { updateSetting('quality', qualitySelect.value); playAudio('ui_click'); });
   qualityRow.append(qualitySelect);
   const fpsRow = settingRow('显示帧率', 'HUD 右上角显示实时 FPS');
   const fpsToggle = buildToggle(!!s.showFps, value => updateSetting('showFps', value), '显示帧率');
   fpsToggle.id = 'fps-toggle';
   fpsRow.append(fpsToggle);
-  const hudRow = settingRow('HUD 缩放', '调整局内界面大小');
+  const hudRow = settingRow('HUD 缩放', '调整局内界面大小（70%–130%）');
   const hudScale = buildSlider(Math.round((s.hudScale ?? 1) * 100), 70, 130, 5, value => updateSetting('hudScale', value / 100), 'HUD 缩放');
   hudRow.append(hudScale);
-  displayPanel.append(qualityRow, fpsRow, hudRow);
+  const displayPanel = panel('settings-display', 'monitor', '画面', [qualityRow, fpsRow, hudRow]);
 
-  const controlsPanel = h('section', 'panel');
-  controlsPanel.id = 'settings-controls';
-  const controlsHead = h('div', 'panel-head row');
-  controlsHead.append(icon('gamepad', 18), h('b', null, '操作'));
-  controlsPanel.append(controlsHead);
+  // ---- 操作 ----
   const sensRow = settingRow('瞄准灵敏度', '数值越高转向越快');
   const sensSlider = buildSlider(Math.round((s.sensitivity ?? 1) * 100), 20, 200, 5, value => updateSetting('sensitivity', value / 100), '瞄准灵敏度');
   sensRow.append(sensSlider);
@@ -1720,7 +1754,7 @@ function buildSettings() {
   const stickSlider = buildSlider(Math.round((s.joystickScale ?? 1) * 100), 70, 140, 5, value => updateSetting('joystickScale', value / 100), '摇杆大小');
   stickRow.append(stickSlider);
   const autoRow = settingRow('自动开火', '准星覆盖目标时自动射击');
-  const autoToggle = buildToggle(!!s.autoFire, value => updateSetting('autoFire', value), '自动开火');
+  const autoToggle = buildToggle(s.autoFire !== false, value => updateSetting('autoFire', value), '自动开火');
   autoToggle.id = 'autofire-toggle';
   autoRow.append(autoToggle);
   const hapticRow = settingRow('震动反馈', '受击与开火时轻微震动');
@@ -1737,44 +1771,46 @@ function buildSettings() {
     btn.addEventListener('click', () => {
       for (const item of layoutSeg.children) item.classList.toggle('active', item === btn);
       updateSetting('leftHanded', value === 'left');
+      playAudio('ui_click');
     });
     layoutSeg.append(btn);
   }
   layoutRow.append(layoutSeg);
-  controlsPanel.append(sensRow, stickRow, autoRow, hapticRow, layoutRow);
+  const motionRow = settingRow('减少动态效果', '关闭入场与呼吸动画，降低晕动感');
+  const motionToggle = buildToggle(!!s.reducedMotion, value => updateSetting('reducedMotion', value), '减少动态效果');
+  motionToggle.id = 'motion-toggle';
+  motionRow.append(motionToggle);
+  const controlsPanel = panel('settings-controls', 'gamepad', '操作', [sensRow, stickRow, autoRow, hapticRow, layoutRow, motionRow]);
 
-  const guidePanel = h('section', 'panel');
-  guidePanel.id = 'settings-guide';
-  guidePanel.append(h('div', 'panel-head row'));
-  guidePanel.querySelector('.panel-head').append(icon('help', 18), h('b', null, '引导与存档'));
+  // ---- 引导与存档 ----
   const helpRow = settingRow('操作说明', '查看键鼠与触屏两套操作方式');
   const helpBtn = h('button', 'btn btn-ghost btn-sm', '查看');
   helpBtn.type = 'button';
   helpBtn.id = 'btn-show-help';
-  helpBtn.addEventListener('click', () => showHelpDialog());
+  helpBtn.addEventListener('click', () => { playAudio('ui_click'); showHelpDialog(); });
   helpRow.append(helpBtn);
   const tutorialRow = settingRow('重新播放新手引导', '从第一步开始重新熟悉操作');
   const tutorialBtn = h('button', 'btn btn-ghost btn-sm', '重启引导');
   tutorialBtn.type = 'button';
   tutorialBtn.id = 'btn-restart-tutorial';
-  tutorialBtn.addEventListener('click', () => restartTutorial());
+  tutorialBtn.addEventListener('click', () => { playAudio('ui_click'); restartTutorial(); });
   tutorialRow.append(tutorialBtn);
   const resetRow = settingRow('重置本地存档', '等级、信用点、任务与成就都会清空');
   const resetBtn = h('button', 'btn btn-danger btn-sm', '重置');
   resetBtn.type = 'button';
   resetBtn.id = 'btn-reset-save';
-  resetBtn.addEventListener('click', () => confirmResetSave());
+  resetBtn.addEventListener('click', () => { playAudio('ui_click'); confirmResetSave(); });
   resetRow.append(resetBtn);
-  guidePanel.append(helpRow, tutorialRow, resetRow);
+  const guidePanel = panel('settings-guide', 'help', '引导与存档', [helpRow, tutorialRow, resetRow]);
 
   columns.append(audioPanel, displayPanel, controlsPanel, guidePanel);
-  body.append(columns);
-  el.append(body);
-  return el;
+  const content = h('div', 'stack-lg');
+  content.append(columns);
+  return screenShell({ name: 'settings', head, main: content });
 }
 
 function updateSetting(key, value) {
-  try { app?.settings && (app.settings[key] = value); } catch { /* 忽略只读 settings */ }
+  try { if (app?.settings) app.settings[key] = value; } catch { /* 忽略只读 settings */ }
   try {
     if (app?.applySettings) app.applySettings(key);
     else if (app?.saveSettings) app.saveSettings();
