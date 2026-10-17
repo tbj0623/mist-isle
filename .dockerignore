@@ -1,0 +1,11 @@
+node_modules
+android
+dist
+artifacts
+test-results
+playwright-report
+.git
+.env
+*.log
+*.keystore
+*.jks

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/app/src/main/assets/
+artifacts/
+test-results/
+playwright-report/
+*.log
+*.jks
+*.keystore
+.env

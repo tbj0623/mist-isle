@@ -1,0 +1,28 @@
+{
+  "name": "mist-isle",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Original low-poly multiplayer battle royale for Android and browsers",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node server/index.mjs",
+    "dev": "node scripts/build.mjs && node server/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "playwright test",
+    "benchmark": "node scripts/benchmark.mjs",
+    "android": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1"
+  },
+  "dependencies": {
+    "lucide": "1.53.0",
+    "three": "0.180.0",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "esbuild": "0.28.2"
+  }
+}

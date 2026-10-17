@@ -1,0 +1,4 @@
+# Replace game.example.com with a domain pointing at your server.
+game.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
