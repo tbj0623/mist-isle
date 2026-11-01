@@ -49,7 +49,7 @@
     "ws": "8.22.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.0",
+    "@playwright/test": "1.64.1",
     "axe-core": "^4.14.0",
     "esbuild": "0.28.2",
     "lucide": "1.53.0",
