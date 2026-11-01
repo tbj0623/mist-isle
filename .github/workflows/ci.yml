@@ -185,8 +185,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # v3 默认请求已被 Google 移除的 `tools` SDK 包，会在 GitHub Runner 上失败。
+      # v4 默认只装 platform-tools；显式列出，防止未来默认值变化。
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       # 缓存 Gradle 依赖与 wrapper 发行包：首次冷构建后才能提速，
       # key 跟着 wrapper 版本与构建脚本变化，避免用到过期缓存。
