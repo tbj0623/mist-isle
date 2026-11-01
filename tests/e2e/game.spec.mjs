@@ -183,16 +183,18 @@ test('desktop · 键鼠：W 移动、左键开火、R 换弹、Esc 暂停、返�
   await startTraining(page);
   await page.waitForTimeout(1200);
 
-  // 键盘移动：按 W 500ms 后坐标变化
+  // 用实际位移检验 W 键，避免软件渲染慢帧使 500ms 墙钟时间内游戏模拟不足。
   const before = await meOf(page);
   expect(before).not.toBeNull();
   await page.keyboard.down('KeyW');
-  await page.waitForTimeout(500);
-  await page.keyboard.up('KeyW');
-  await page.waitForTimeout(250);
-  const after = await meOf(page);
-  const moved = Math.hypot(after.x - before.x, after.z - before.z);
-  expect(moved, `W 移动距离 ${moved.toFixed(2)}m`).toBeGreaterThan(1.5);
+  try {
+    await expect.poll(async () => {
+      const current = await meOf(page);
+      return Math.hypot(current.x - before.x, current.z - before.z);
+    }, { timeout: 18000 }).toBeGreaterThan(1.5);
+  } finally {
+    await page.keyboard.up('KeyW');
+  }
 
   // 鼠标开火：左键按住 → 弹药减少
   const ammoBefore = await page.evaluate(() => window.mistIsle.getState().me.ammo);
@@ -207,10 +209,8 @@ test('desktop · 键鼠：W 移动、左键开火、R 换弹、Esc 暂停、返�
   await page.keyboard.press('KeyR');
   await expect.poll(async () => page.evaluate(() => window.mistIsle.getState().me.ammo), { timeout: 10000 }).toBeGreaterThan(low);
 
-  // Esc：main.js 与 ui-screens.js 各注册了一个 keydown 监听 —— 同一按键先开暂停、再被
-  // ui-screens 的顶层对话框处理器（open.dataset.static==='1' → hidePause）立刻关闭。
-  // 这是 1.0 已知缺陷（见 bug 清单），因此这里改为断言“暂停 UI 可正常开关”，用 HUD 菜单按钮打开。
-  await page.locator('#game-menu').click();
+  // Esc 本身必须打开暂停：回归早期双 keydown 监听造成「一闪而过」的问题。
+  await page.keyboard.press('Escape');
   await expect(page.locator('#pause-dialog')).toBeVisible();
   const frozenAt = await page.evaluate(() => window.mistIsle.getState().time);
   await page.waitForTimeout(500);
@@ -221,7 +221,7 @@ test('desktop · 键鼠：W 移动、左键开火、R 换弹、Esc 暂停、返�
   await page.keyboard.press('Escape');
   await expect(page.locator('#pause-dialog')).not.toBeVisible();
 
-  // 继续战斗：暂停期间时间不再推进
+  // 再次暂停，并验证点「继续」后模拟时间恢复推进。
   await page.locator('#game-menu').click();
   await expect(page.locator('#pause-dialog')).toBeVisible();
   await page.locator('#btn-resume').click();
