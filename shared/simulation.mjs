@@ -1202,7 +1202,7 @@ export class Match {
       const canDown = !opts.noDown && this.teamSize > 1 && mates.length > 0 && this.mode !== 'solo'
         && this.mode !== 'training' && !this.hordeMode;
       if (canDown) this._downPlayer(target, sourceId);
-      else this.kill(target, sourceId, 'shot');
+      else this.kill(target, sourceId, opts.reason || (opts.zone ? 'zone' : 'shot'));
     }
     return dmg;
   }
@@ -1255,6 +1255,7 @@ export class Match {
     this._emit('kill', {
       player: target.id, by: sourceId, reason, team: target.team,
       x: r2(target.x), z: r2(target.z), name: target.name,
+      attackerName: src && src !== target ? src.name : null,
       weapon: srcWeapon ? srcWeapon.id : null,
       weaponClass: srcWeapon ? (srcWeapon.cls || srcWeapon.category || null) : null,
       crouch: !!(src && src.state === 'crouch'),
@@ -1496,7 +1497,7 @@ export class Match {
         const q = this.players[k];
         if (!q.alive || q.downed) continue;
         if (dist(q.x, q.z, f.x, f.z) <= f.r) {
-          this.damage(q, THROWABLES.molotov.burn * 0.5, f.owner, { source: this._find(f.owner) });
+          this.damage(q, THROWABLES.molotov.burn * 0.5, f.owner, { source: this._find(f.owner), reason: 'fire' });
         }
       }
     }
@@ -1520,14 +1521,14 @@ export class Match {
         if (owner && q !== owner && q.team === owner.team && COMBAT.friendlyFire <= 0) {
           const blockedF = !this.world.clearLine({ x: g.x, z: g.z }, { x: q.x, z: q.z });
           const falloffF = Math.max(0.2, 1 - (d / (radius * 0.95)));
-          this.damage(q, def.damage * falloffF * (blockedF ? 0.45 : 1) * 0.3, g.owner, { source: owner, noDown: true });
+          this.damage(q, def.damage * falloffF * (blockedF ? 0.45 : 1) * 0.3, g.owner, { source: owner, noDown: true, reason: 'grenade' });
           continue;
         }
         const blocked = !this.world.clearLine({ x: g.x, z: g.z }, { x: q.x, z: q.z });
         const falloff = Math.max(0.2, 1 - (d / (radius * 0.95)));
         let dmg = def.damage * falloff * (blocked ? 0.45 : 1);
         if (q.id === g.owner) dmg *= 0.5;
-        this.damage(q, dmg, g.owner, { source: owner, noDown: true });
+        this.damage(q, dmg, g.owner, { source: owner, noDown: true, reason: 'grenade' });
       }
       this._emit('explosion', { id: g.id, kind: 'frag', x: r2(g.x), z: r2(g.z), r: radius });
     } else if (g.kind === 'smoke') {
@@ -1772,7 +1773,7 @@ export class Match {
         // 旧实现照撞不误 —— 司机一慌就打转把队友撞成重伤，是四人小队里最莫名其妙的死法。
         const driver = car.driver ? this._find(car.driver) : null;
         if (driver && q.team === driver.team && COMBAT.friendlyFire <= 0) continue;
-        this.damage(q, Math.abs(car.speed) * 3.4, car.driver, {});
+        this.damage(q, Math.abs(car.speed) * 3.4, car.driver, { reason: 'vehicle' });
         rammed = true;
         this._emit('vehicle', { action: 'hit', car: car.id, player: q.id, speed: r2(car.speed) });
       }
@@ -1855,7 +1856,7 @@ export class Match {
       if (!q) continue;
       riders.add(q.id);
       this._exitCar(q, true);
-      this.damage(q, 55, null, { noDown: true });
+      this.damage(q, 55, null, { noDown: true, reason: 'explosion' });
     }
     car.occupants.fill(null);
     car.driver = null;
@@ -1865,7 +1866,7 @@ export class Match {
       if (riders.has(q.id)) continue;      // 乘员已单独结算，不再吃爆炸二段
       const d = dist(q.x, q.z, car.x, car.z);
       if (d > 6) continue;
-      this.damage(q, 70 * (1 - d / 6), shooter ? shooter.id : null, { noDown: true });
+      this.damage(q, 70 * (1 - d / 6), shooter ? shooter.id : null, { noDown: true, reason: 'explosion' });
     }
     this._emit('vehicle', { action: 'explode', car: car.id, x: r2(car.x), z: r2(car.z) });
   }

@@ -3406,6 +3406,9 @@ function buildResultDialog() {
   const subtitle = h('p', 'muted');
   subtitle.id = 'result-subtitle';
   textWrap.append(eyebrow, title, subtitle);
+  const debrief = h('section', 'result-debrief');
+  debrief.id = 'result-debrief';
+  debrief.setAttribute('aria-label', '本局战术复盘');
   const stats = h('div', 'result-stats');
   stats.id = 'result-stats';
   const xpPanel = h('div', 'ui-result-xp');
@@ -3451,7 +3454,7 @@ function buildResultDialog() {
     leaveResultToHome();
   });
   actions.append(share, again, home);
-  wrap.append(rankWrap, textWrap, stats, xpPanel, rankNote, progList, rewards, tags, seasonBox, masteryBox, actions);
+  wrap.append(rankWrap, textWrap, debrief, stats, xpPanel, rankNote, progList, rewards, tags, seasonBox, masteryBox, actions);
   return wrap;
 }
 
@@ -3501,6 +3504,18 @@ function renderResult() {
     if (s.mapId) bits.push(mapNameOf(s.mapId));
     if (s.reason === 'horde') bits.push(`坚持到第 ${s.hordeWaves || 0} 波`);
     setText(subtitle, bits.join(' · ') || '本局结束，战报已记录。');
+  }
+  const debrief = document.getElementById('result-debrief');
+  if (debrief) {
+    clear(debrief);
+    const note = s.debrief;
+    debrief.classList.toggle('win', note?.kind === 'win');
+    if (note) {
+      debrief.append(h('small', 'result-debrief-label', note.title || '战术复盘'));
+      debrief.append(h('h3', 'result-debrief-cause', note.cause || '本局已结束'));
+      debrief.append(h('p', 'result-debrief-tip', note.tip || '调整战术，重新出发。'));
+    } else debrief.style.display = 'none';
+    if (note) debrief.style.display = '';
   }
   const stats = document.getElementById('result-stats');
   if (stats) {

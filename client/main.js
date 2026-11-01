@@ -24,6 +24,7 @@ import { Match, emptyInput } from '../shared/simulation.mjs';
 import { PROTOCOL_VERSION, VERSION, TICK_RATE, MATCH_MODES } from '../shared/rules.mjs';
 import { MAPS } from '../shared/data/maps.mjs';
 import { matchSummaryFromState } from './meta.js';
+import { captureDeath, buildMatchDebrief } from './battle-coach.js';
 
 const $ = (id) => document.getElementById(id);
 const NATIVE = location.hostname === 'appassets.androidplatform.net';
@@ -90,6 +91,7 @@ const app = {
   fpsAt: 0,
   resultSent: false,
   deathShown: false,
+  deathRecord: null,
   readySent: false,
   readyFrames: 0,
   reconnectAt: 0,
@@ -509,6 +511,7 @@ function enterMatch() {
   app.paused = false;
   app.resultSent = false;
   app.deathShown = false;
+  app.deathRecord = null;
   app.readySent = false;
   app.readyFrames = 0;
   // 每局重建录像器：否则上一局的帧会混进本局的死亡回放。
@@ -659,7 +662,10 @@ function processEvents(state, events) {
         app.audio?.play?.('kill', {});
         // ev.by = 击杀者，ev.player = 被击杀者（shared/simulation.mjs kill）
         if (ev.by === app.selfId && ev.player !== app.selfId) app.feel?.onKill({ targetName: ev.name, headshot: !!ev.headshot });
-        if (ev.player === app.selfId) app.feel?.onDeath();
+        if (ev.player === app.selfId) {
+          app.deathRecord = captureDeath(ev, app.selfId, state.players);
+          app.feel?.onDeath();
+        }
         break;
       case 'revive': if (nearSelf(ev, 30)) app.audio?.playAt?.('revive', { x: ev.x, z: ev.z }); break;
       // pickup / reload / heal 之前只播音频，feel.js 里对应的三个反馈入口
@@ -724,6 +730,7 @@ function finishMatch(state) {
   const summary = matchSummaryFromState(state, app.selfId, {
     mode: app.modeId, mapId: app.mapId, offline: app.offline,
   });
+  summary.debrief = buildMatchDebrief(summary, app.deathRecord);
   let rewards = null;
   try { rewards = app.meta?.addMatchResult?.(summary) || null; } catch (e) { console.warn('reward', e); }
 

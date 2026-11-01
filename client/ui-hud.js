@@ -5,6 +5,7 @@
 
 import { RARITY_NAMES, RARITY_COLORS, REVIVE_TIME, BLEEDOUT_TIME, HORDE } from '../shared/rules.mjs';
 import { COMBAT_TASKS, createCombatGuide, observeCombatMovement, observeCombatEvent, combatGuideStatus } from './training-guide.js';
+import { zoneGuidance, nearestLootHint } from './battle-coach.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -951,18 +952,25 @@ export function drawMinimap(canvas, state, me) {
 
     // 缩圈方向指示：人在圈外（红）或正在缩圈（琥珀）时，在自身旁画一枚指向圈心的箭头
     if (me && Number.isFinite(me.x) && Number.isFinite(me.z)) {
-      const outside = Math.hypot(me.x - (zone.x || 0), me.z - (zone.z || 0)) > (zone.r || 0);
-      if (outside || zone.closing) {
-        const goalX = zone.closing && zone.target ? (zone.target.x ?? zone.x) : zone.x;
-        const goalZ = zone.closing && zone.target ? (zone.target.z ?? zone.z) : zone.z;
+      const route = zoneGuidance(zone, me, state.phase, state.mode);
+      if (route?.goal) {
+        const goalX = route.goal.x;
+        const goalZ = route.goal.z;
         const [mx, my] = pt(me.x, me.z);
         const [gx, gy] = pt(goalX, goalZ);
+        ctx.save();
+        ctx.strokeStyle = route.kind === 'danger' ? 'rgba(255,111,99,.9)' : 'rgba(245,180,69,.9)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(gx, gy); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
         const ang = Math.atan2(gy - my, gx - mx);
         const near = Math.min(22, Math.max(12, Math.hypot(gx - mx, gy - my) * 0.4));
         ctx.save();
         ctx.translate(mx + Math.cos(ang) * near, my + Math.sin(ang) * near);
         ctx.rotate(ang);
-        ctx.fillStyle = outside ? 'rgba(255,92,92,0.95)' : 'rgba(245,180,69,0.92)';
+        ctx.fillStyle = route.kind === 'danger' ? 'rgba(255,92,92,0.95)' : 'rgba(245,180,69,0.92)';
         ctx.strokeStyle = 'rgba(5,15,16,0.85)';
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -975,6 +983,21 @@ export function drawMinimap(canvas, state, me) {
         ctx.stroke();
         ctx.restore();
       }
+    }
+  }
+
+  // 仅在首次实战教学中标明最近的可拾取物资；不透视敌人或额外物资信息。
+  if (combatGuide && !combatGuide.completed.has('pickup')) {
+    const hint = nearestLootHint(state.loot, me);
+    if (hint) {
+      const [lx, ly] = pt(hint.x, hint.z);
+      ctx.fillStyle = 'rgba(251,209,107,.95)';
+      ctx.strokeStyle = '#132923';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffe6a5';
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillText('物资', lx + 6, ly - 5);
     }
   }
 
@@ -1235,9 +1258,12 @@ function updateTop(state, me, now) {
     const dist = me ? Math.hypot((me.x || 0) - zone.x, (me.z || 0) - zone.z) : 0;
     const outside = me && dist > (zone.r || 0);
     danger = !!outside;
-    if (outside) zoneLabel = `圈外 · 每秒 ${Math.round(zone.damage || 0)} 点伤害`;
+    const route = zoneGuidance(zone, me, state.phase, state.mode);
+    if (route) zoneLabel = route.text;
+    else if (outside) zoneLabel = `圈外 · 每秒 ${Math.round(zone.damage || 0)} 点伤害`;
     else if (zone.closing) zoneLabel = `安全区收缩中 · ${Math.max(0, Math.ceil(zone.nextIn || 0))}s`;
     else zoneLabel = `安全区稳定 · ${Math.max(0, Math.ceil(zone.nextIn || 0))}s`;
+    toggle(R.zone, 'warn', route?.kind === 'warn');
   } else if (deploying) {
     zoneLabel = '空降中 · 安全区待开启';
   }
@@ -1938,6 +1964,10 @@ function trainingGuideEvent(event, selfId) {
 function updateCombatGuide(state, me) {
   if (!combatGuide || state?.phase !== 'live' || !me) return;
   if (observeCombatMovement(combatGuide, me)) refreshCombatGuide();
+  if (combatGuideStatus(combatGuide).next?.id === 'pickup') {
+    const loot = nearestLootHint(state.loot, me);
+    if (loot) setText(R.combatGuide?.hint, loot.text + ' · 靠近后交互');
+  }
 }
 
 export function initHud(application) {

@@ -12986,3 +12986,48 @@ body.quality-low #hud .hud-panel {
 }
 
 #hud #combat-guide { display: flex; flex-direction: column; align-items: stretch; gap: 0; text-align: left; }
+
+
+/* v1.5 · 战术复盘与安全区导航：在结算最先呈现失误原因及下一局建议。 */
+.result-body #result-debrief {
+  padding: 13px 16px;
+  border: 1px solid rgba(244, 168, 103, .42);
+  border-left: 4px solid #f4aa64;
+  border-radius: 11px;
+  background: linear-gradient(115deg, rgba(102, 53, 29, .28), rgba(16, 30, 28, .8));
+  color: #f5faf4;
+}
+.result-body #result-debrief.win {
+  border-color: rgba(119, 231, 177, .42);
+  border-left-color: #77e7b1;
+  background: linear-gradient(115deg, rgba(33, 105, 72, .27), rgba(16, 30, 28, .8));
+}
+.result-body .result-debrief-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  color: #f4bf88;
+}
+.result-body #result-debrief.win .result-debrief-label { color: #a0e9ba; }
+.result-body .result-debrief-cause {
+  margin: 0 0 5px;
+  font-size: clamp(15px, 2vw, 19px);
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.result-body .result-debrief-tip {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #c5ddd2;
+}
+@media (max-width: 720px), (max-height: 480px) {
+  .result-body #result-debrief { padding: 8px 11px; }
+  .result-body .result-debrief-cause { font-size: 14px; }
+  .result-body .result-debrief-tip { font-size: 11px; line-height: 1.4; }
+  #hud #zone-status { max-width: min(42vw, 220px); min-width: 0; }
+  #hud #zone-status .zone-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+}

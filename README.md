@@ -3,11 +3,11 @@
 > 低多边形俯视角战术竞技：64 人空降雾岛，搜刮、交战、在五阶段风暴圈里活到最后。
 
 原创美术、地图、程序化模型与合成音效；完全自研，未使用第三方游戏素材。
-版本 **1.4.0** ｜ 协议 **v3** ｜ 平台 **Android 8.0+ / 现代浏览器（WebGL 2）** ｜ Node.js **≥ 22**
+版本 **1.5.0** ｜ 协议 **v3** ｜ 平台 **Android 8.0+ / 现代浏览器（WebGL 2）** ｜ Node.js **≥ 22**
 
 | 项目 | 值 |
 | --- | --- |
-| 当前版本 | `1.4.0`（`shared/rules.mjs` 的 `VERSION`） |
+| 当前版本 | `1.5.0`（`shared/rules.mjs` 的 `VERSION`） |
 | 协议版本 | `3`（客户端与服务端必须一致，否则握手拒绝） |
 | 服务端 Tick | `30 Hz`，每 3 tick 推一次快照（`10 Hz`） |
 | 单场容量 | `64` 人 / `16` 队 × 4 人（`solo` 为 64 队 × 1 人） |
@@ -18,7 +18,11 @@
 
 ## 游戏截图
 
-![雾岛突围 1.4.0 浏览器首页](docs/screenshots/home-desktop.png)
+![雾岛突围浏览器首页](docs/screenshots/home-desktop.png)
+
+![战术教练 · 桌面端赛后复盘](docs/screenshots/debrief-desktop.png)
+
+[查看手机横屏战术复盘](docs/screenshots/debrief-mobile.png)
 
 [查看手机横屏界面](docs/screenshots/home-mobile.png)
 
@@ -46,9 +50,10 @@
 
 - **一键试玩**：主菜单点「立即试玩」，不注册、不建房，直接进入 15 名 AI 的离线训练场。
 - **局内实战教学**：训练场通过移动、开火、命中、换弹、拾取五项真实操作循序入门；桌面和手机横屏给出不同操作提示，支持跳过、记住完成状态与设置中重播。
+- **战术教练 v1.5**：安全区显示方向/距离和小地图进圈虚线路径；拾取教学标出附近未拾取物资；结算页依据权威事件区分枪击、圈伤、爆炸、燃烧、撞击、失血淘汰并给出下一局建议。导航仅为直线方向提示，尚不具备绕障寻路。
 - **自定义战局**：可选择单人生存、四人小队、生存波次与训练场，另有三张地图、三档 AI 难度。
 - **[浏览器在线试玩](https://tbj0623.github.io/mist-isle/)**：GitHub Pages 静态客户端，支持离线模式；**不包含公网多人服务器**。多人联机需要自行部署下方 Node.js 服务端。
-- **[Android APK 下载](https://github.com/tbj0623/mist-isle/releases/tag/v1.4.0)**：v1.4.0 正式签名测试版，Android 8.0+；正式商店上架、跨机型兼容与公网服务仍在验证中。
+- **[Android APK 下载](https://github.com/tbj0623/mist-isle/releases/tag/v1.5.0)**：v1.5.0 正式签名测试版，Android 8.0+；正式商店上架、跨机型兼容与公网服务仍在验证中。
 - **开源许可**：项目原创代码与可分发原创素材以 [MIT](LICENSE) 协议开放。第三方依赖各自保留许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - **测试版声明**：本仓库有自动化测试，但尚未经过大规模真人对局、公网弱网和多台 Android 真机完整验收。欢迎通过 Issues 报告可复现问题。
 
@@ -75,10 +80,10 @@ npm run android
 脚本先执行 Web 构建，再定位 Android SDK（`ANDROID_HOME` → `ANDROID_SDK_ROOT` → `%LOCALAPPDATA%\Android\Sdk`）与 Gradle 8.14.3，最后 `assembleDebug` 并把 APK 复制为：
 
 ```
-artifacts/mist-isle-<version>-debug.apk   →   artifacts/mist-isle-1.1.0-debug.apk
+artifacts/mist-isle-<version>-debug.apk   →   artifacts/mist-isle-1.5.0-debug.apk
 ```
 
-包名 `com.mistisle.game`，`minSdk 26`（Android 8.0）、`targetSdk 36`、`versionCode 110`。壳是原生 `WebView` + `WebViewAssetLoader`（资源走 `https://appassets.androidplatform.net/assets/`），关闭文件与内容访问，不暴露原生 JS 桥。自适应启动图标（VectorDrawable 前景 + Android 13 单色图标）。`android/keystore.properties` 存在时 `assembleRelease` 自动启用正式签名 + R8 混淆 + 资源收缩（release 包约 0.5 MB），否则回退 debug 签名并打印警告；构建脚本会校验 `package.json` 与 `build.gradle` 版本一致。
+包名 `com.mistisle.game`，`minSdk 26`（Android 8.0）、`targetSdk 36`、`versionCode 150`。壳是原生 `WebView` + `WebViewAssetLoader`（资源走 `https://appassets.androidplatform.net/assets/`），关闭文件与内容访问，不暴露原生 JS 桥。自适应启动图标（VectorDrawable 前景 + Android 13 单色图标）。`android/keystore.properties` 配置有效时 `assembleRelease` 启用正式签名 + R8 混淆 + 资源收缩（release 包约 0.6 MB）；缺少正式签名时发布构建会拒绝执行，测试可使用独立的 debug 包。构建脚本会校验 `package.json` 与 `build.gradle` 版本一致。
 
 ## 操作
 
