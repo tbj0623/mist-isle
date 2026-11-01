@@ -1,0 +1,14 @@
+#!/bin/sh
+# 雾岛突围 / MIST ISLE — git pre-commit 钩子（可选安装，不依赖 husky）
+#
+# 启用方式（一次，写入本仓库的 .git/config）：
+#   git config core.hooksPath .githooks
+# 关闭：
+#   git config --unset core.hooksPath
+#
+# 逻辑全部在 scripts/precommit.mjs：oxlint 全仓库扫描 + render-static/data 两个快速测试文件。
+# 跳过本次检查：git commit --no-verify
+#
+# 注意：Windows 上 Git 自带的 sh 会执行本文件；precommit.mjs 内部用 process.execPath
+# 直接调用 oxlint 与 node --test，不依赖 npm.cmd，因此三平台行为一致。
+node scripts/precommit.mjs

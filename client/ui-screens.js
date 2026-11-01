@@ -3,8 +3,13 @@
 // 依赖：shared/rules.mjs、shared/data/maps.mjs（冻结）。武器/道具/任务/成就/商店等数据
 // 优先取自 app.data / app.meta，未注入时使用内置回退目录（保证界面永远可渲染）。
 
-import { VERSION, RARITY_NAMES, RARITY_COLORS, RANK_TIERS, DIFFICULTY, SQUAD_SIZE } from '../shared/rules.mjs';
+import { VERSION, RARITY_NAMES, RARITY_COLORS, RANK_TIERS, DIFFICULTY, SQUAD_SIZE, HORDE, MAX_PLAYERS } from '../shared/rules.mjs';
 import { MAPS, MAP_ORDER } from '../shared/data/maps.mjs';
+import { WEAPONS as DATA_WEAPONS, ATTACHMENTS as DATA_ATTACHMENTS, AMMO_TYPES } from '../shared/data/weapons.mjs';
+import { CONSUMABLES as DATA_CONSUMABLES, THROWABLES as DATA_THROWABLES } from '../shared/data/items.mjs';
+import { SKINS as DATA_SKINS, STORE_ALL as DATA_STORE_ITEMS } from '../shared/data/store.mjs';
+import { ACHIEVEMENTS as DATA_ACHIEVEMENTS } from '../shared/data/achievements.mjs';
+import { DAILY_POOL, WEEKLY_POOL } from '../shared/data/missions.mjs';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -40,6 +45,16 @@ function fmtTime(sec) {
 function rarityName(r) { return RARITY_NAMES?.[r] || '普通'; }
 function rarityClass(r) { return RARITY_LIST.includes(r) ? `rarity-${r}` : 'rarity-common'; }
 function rarityColor(r) { return RARITY_COLORS?.[r] || '#c9d2cb'; }
+/** 色觉冗余标识（WCAG 1.4.1 不只靠颜色）：common 无标记、uncommon ◇、rare ◆、epic ★★、legendary ★★★。 */
+const RARITY_MARKS = { common: '', uncommon: '◇', rare: '◆', epic: '★★', legendary: '★★★' };
+function rarityMark(r) { return RARITY_MARKS[r] ?? ''; }
+/** 稀有度符号节点（装饰性，读屏由 tag 的 aria-label 承担，避免重复念）。 */
+function rarityMarkNode(r) {
+  const cls = RARITY_LIST.includes(r) ? r : 'common';
+  const node = h('span', `rarity-mark rarity-mark-${cls}`, rarityMark(cls));
+  node.setAttribute('aria-hidden', 'true');
+  return node;
+}
 
 // ── 02 · 图标（内联 SVG，不引入 lucide 整包） ───────────────────────────────
 const ICONS = {
@@ -187,18 +202,28 @@ const codexTabs = [
 ];
 
 function data() { return app?.data || {}; }
-function weaponTable() { const t = data().weapons || data().WEAPONS; return t && Object.keys(t).length ? t : FALLBACK_WEAPONS; }
-function attachmentTable() { const t = data().attachments || data().ATTACHMENTS; return t && Object.keys(t).length ? t : FALLBACK_ATTACHMENTS; }
-function itemTable() { const t = data().items || data().ITEMS; return t && Object.keys(t).length ? t : FALLBACK_ITEMS; }
-function skinTable() { const t = data().skins || data().SKINS; return Array.isArray(t) && t.length ? t : FALLBACK_SKINS; }
+// 真实数据源（shared/data）为第一优先；app.data 注入可覆盖（便于 e2e/调试）。
+function weaponTable() { const t = data().weapons || data().WEAPONS; return t && Object.keys(t).length ? t : (DATA_WEAPONS || FALLBACK_WEAPONS); }
+function attachmentTable() { const t = data().attachments || data().ATTACHMENTS; return t && Object.keys(t).length ? t : (DATA_ATTACHMENTS || FALLBACK_ATTACHMENTS); }
+function itemTable() {
+  const injected = data().items || data().ITEMS;
+  if (injected && Object.keys(injected).length) return injected;
+  return { ...FALLBACK_ITEMS, ...(DATA_CONSUMABLES || {}), ...(DATA_THROWABLES || {}) };
+}
+function skinTable() {
+  const t = data().skins || data().SKINS;
+  if (Array.isArray(t) && t.length) return t;
+  return Array.isArray(DATA_SKINS) && DATA_SKINS.length ? DATA_SKINS : FALLBACK_SKINS;
+}
 function storeTable() {
   const t = data().storeItems || data().STORE_ITEMS;
   if (Array.isArray(t) && t.length) return t;
-  return skinTable();
+  return Array.isArray(DATA_STORE_ITEMS) && DATA_STORE_ITEMS.length ? DATA_STORE_ITEMS : skinTable();
 }
 function achievementTable() {
   const t = data().achievements || data().ACHIEVEMENTS;
-  return Array.isArray(t) && t.length ? t : FALLBACK_ACHIEVEMENTS;
+  if (Array.isArray(t) && t.length) return t;
+  return Array.isArray(DATA_ACHIEVEMENTS) && DATA_ACHIEVEMENTS.length ? DATA_ACHIEVEMENTS : FALLBACK_ACHIEVEMENTS;
 }
 // 契约要求 18 把武器 / ≥24 条成就：数据未注入时按类别循环铺满，保证界面信息完整可读。
 const CODEX_WEAPON_MIN = 18;
@@ -244,13 +269,15 @@ function fullAchievements() {
 }
 function dailyMissions() {
   const t = data().missions || data().DAILY_POOL;
-  const list = Array.isArray(t) ? t : FALLBACK_MISSIONS;
-  return list.slice(0, 3);
+  if (Array.isArray(t) && t.length) return t.slice(0, 3);
+  const pool = Array.isArray(DAILY_POOL) && DAILY_POOL.length ? DAILY_POOL : FALLBACK_MISSIONS;
+  return pool.slice(0, 3);
 }
 function weeklyMissions() {
   const t = data().weeklyMissions || data().WEEKLY_POOL;
-  const list = Array.isArray(t) ? t : FALLBACK_WEEKLY;
-  return list.slice(0, 3);
+  if (Array.isArray(t) && t.length) return t.slice(0, 3);
+  const pool = Array.isArray(WEEKLY_POOL) && WEEKLY_POOL.length ? WEEKLY_POOL : FALLBACK_WEEKLY;
+  return pool.slice(0, 3);
 }
 function enemyCatalog() {
   const t = data().enemies;
@@ -321,8 +348,10 @@ function loadout() {
 function isUnlocked(kind, id) {
   const m = meta();
   try { if (m?.isUnlocked) return !!m.isUnlocked(kind, id); } catch { /* 回退 */ }
+  // Meta 没有时：默认皮肤视为已拥有，其余按存档 unlocked 列表判断
+  if ((kind === 'skins' || kind === 'skin') && (id === 'skin_default' || id === 'skin_scout' || id === 'skin_medic')) return true;
   const save = saveData();
-  return !!save.unlocked?.[kind]?.includes(id);
+  return !!(save.unlocked?.skins?.includes(id) || save.unlocked?.items?.includes(id) || save.unlocked?.[kind]?.includes(id));
 }
 function missionState(id, weekly) {
   const m = saveData().missions || {};
@@ -376,12 +405,26 @@ function makeChrome(name = 'play') {
   back.type = 'button';
   back.setAttribute('aria-label', '返回主菜单');
   back.append(icon('back'));
-  back.addEventListener('click', () => openScreen('home'));
+  // 返回按钮：如果是从「对局暂停 → 作战设置」进来的，必须回到暂停菜单，
+  // 而不是回大厅。否则会卡进「幽灵对局」——界面是主菜单、但对局仍在跑、
+  // HUD 常驻、paused=true，除刷新外无法回到战斗。
+  back.addEventListener('click', () => {
+    if (uiState.returnToPause) {
+      uiState.returnToPause = false;
+      openScreen('home');
+      try { showPause(); } catch { /* 忽略 */ }
+      return;
+    }
+    openScreen('home');
+  });
   const titleWrap = h('div', 'app-bar-title');
   titleWrap.append(h('b', null, SCREEN_META[name]?.title || ''), h('small', null, SCREEN_META[name]?.sub || ''));
   const spacer = h('div', 'spacer');
+  // 每个二级屏都建一条顶栏，过去都用 id="currency-credits" —— 7 个屏幕同屏存在
+  // 就是 7 个重复 id（HTML 非法、a11y/自动化定位歧义）。改为 data-role，
+  // 首页那个唯一的真正 #currency-credits 保留（契约 §11 要求存在）。
   const creditsWrap = h('div', 'currency currency-credits');
-  creditsWrap.id = 'currency-credits';
+  creditsWrap.dataset.role = 'currency-credits';
   creditsWrap.append(icon('coin', 16), h('b', 'js-credits', '0'), h('small', null, '信用点'));
   const xpWrap = h('div', 'currency currency-xp');
   xpWrap.append(icon('star', 16), h('b', 'js-level', '1'), h('small', null, '等级'));
@@ -453,6 +496,72 @@ export function toast(message, ms = 2400) {
   toastTimers.set(node, timer);
 }
 
+// ── 06b · 契约兜底样式（§11：移动端交互元素 ≥44px） ────────────────────────
+// 不改 style.css（design 所属）；这里只注入一条极小的“触屏命中区”规则，
+// 由 JS 自己维护，design 若在 style.css 里补齐同类规则也不会冲突（同一目标值）。
+function injectTouchTargets() {
+  if (document.getElementById('ui-touch-targets')) return;
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  if (!coarse) return;
+  const style = document.createElement('style');
+  style.id = 'ui-touch-targets';
+  style.textContent = [
+    '@media (pointer: coarse) {',
+    '  .screen .chip, .screen .btn-sm, .screen .btn-xs, .screen .tab,',
+    '  .screen .icon-btn, .screen .toggle, .screen .segmented > button {',
+    '    min-height: 44px;',
+    '  }',
+    '  .screen .chip { height: auto; padding-block: 10px; }',
+    '  .screen .btn-xs { min-height: 40px; }',
+    '  /* 紧凑排版下（如短屏的难度分段）视觉高度可小于 44px，',
+    '     用不可见伪元素把“命中区”扩到 44px，满足 §11 且不破坏布局。 */',
+    '  .screen .segmented > button, .screen .tab, .screen .icon-btn, .screen .chip {',
+    '    position: relative;',
+    '  }',
+    '  .screen .segmented > button::after, .screen .tab::after, .screen .icon-btn::after, .screen .chip::after {',
+    '    content: ""; position: absolute; left: 50%; top: 50%;',
+    '    width: max(100%, 44px); height: max(100%, 44px);',
+    '    transform: translate(-50%, -50%);',
+    '    background: transparent;',
+    '  }',
+    '}',
+  ].join('\n');
+  document.head.append(style);
+}
+
+/**
+ * 局外界面兜底样式（仅补本模块自建、style.css 尚未覆盖的少量容器）。
+ * 不改 style.css（design 所属）；design 补齐同名类后本规则自然被覆盖。
+ */
+function injectScreenStyles() {
+  if (document.getElementById('ui-screen-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'ui-screen-styles';
+  style.textContent = [
+    /* 弹窗内操作行 */
+    '.online-actions,.room-actions,.result-actions,.pause-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:flex-end;margin-top:4px}',
+    '.online-actions .btn,.room-actions .btn,.result-actions .btn{flex:1 1 160px}',
+    '.result-actions{justify-content:center}',
+    /* 商品卡 */
+    '.store-card{min-width:0}',
+    '.store-card .item-art{min-height:96px}',
+    /* 武器选择列表 */
+    '.pick-row{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:52px;padding:10px 14px;border:1px solid var(--line);border-radius:var(--radius-sm);background:rgba(7,23,24,.72);color:var(--text-mid);text-align:left;transition:border-color .2s,background-color .2s}',
+    '.pick-row:hover{border-color:var(--line-accent);background:rgba(20,60,56,.72)}',
+    '.pick-row:disabled{opacity:.45;cursor:not-allowed}',
+    '.pick-main{display:flex;flex-direction:column;gap:2px;min-width:0}',
+    '.pick-main b{color:var(--text-hi);font-size:13px}',
+    '.pick-right{flex:0 0 auto}',
+    /* 图鉴详情地图区域列表 */
+    '.region-list{display:flex;flex-direction:column;gap:6px}',
+    '.region-row{display:flex;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px dashed rgba(151,214,199,.1)}',
+    '.region-row b{color:var(--text-hi);font-size:12px;flex:0 0 auto}',
+    '.region-row small{color:var(--text-dim);font-size:11px;flex:1 1 auto;min-width:0}',
+    '.region-row:last-child{border-bottom:0}',
+  ].join('\n');
+  document.head.append(style);
+}
+
 // ── 07 · 通用小组件 ─────────────────────────────────────────────────────────
 /** 统一交互反馈：点击音效 + 可选 toast。所有 onclick 都应调用。 */
 function playAudio(name, opts) {
@@ -482,7 +591,11 @@ function diffDots(level) {
   return wrap;
 }
 function rarityTag(rarity) {
-  const tag = h('span', `rarity-tag ${rarityClass(rarity)}`, rarityName(rarity));
+  const name = rarityName(rarity);
+  const mark = rarityMark(rarity);
+  const tag = h('span', `rarity-tag ${rarityClass(rarity)}`, mark ? `${mark} ${name}` : name);
+  // 读屏念「稀有度 精良」，符号只是视觉冗余（避免 "◇◇" 被念成符号名）
+  tag.setAttribute('aria-label', `稀有度 ${name}`);
   return tag;
 }
 function statBar(value, max, color) {
@@ -498,6 +611,14 @@ function emptyState(text) {
   const box = h('div', 'empty-state');
   box.append(icon('box', 28), h('p', 'muted', text));
   return box;
+}
+/** 以可见文本为可读名称：WCAG 2.5.3「标签含于名称」要求可见文字必须出现在可访问名里。
+ *  卡片类按钮的子元素多且动态（模式/地图/装备/图鉴），逐个拼 aria-label 极易与可见文本漂移，
+ *  因此在子树构建完成后用 textContent 归一化同步一次最稳。 */
+function syncLabel(node) {
+  const text = (node?.textContent || '').replace(/\s+/g, ' ').trim();
+  if (node && text) node.setAttribute('aria-label', text);
+  return node;
 }
 /** 局外按钮的稳定 id：id="btn-<action>"（契约 §11）。 */
 function btnId(action) { return `btn-${action}`; }
@@ -521,6 +642,10 @@ function screenShell({ name, head, main, side, foot, mainClass = '', bodyClass =
   el.bar = chrome;
   el.append(chrome);
   const body = h('div', `screen-body ${bodyClass}`.trim());
+  // 内容可能高于视口（loadout/career 等），滚动容器必须能键盘聚焦，否则纯键盘用户滚不动（WCAG 2.1.1）
+  body.setAttribute('tabindex', '0');
+  body.setAttribute('role', 'region');
+  body.setAttribute('aria-label', `${SCREEN_META[name]?.title || name}内容区`);
   if (head) body.append(head);
   const mainEl = h('div', `screen-main ${side ? '' : 'single'} ${mainClass}`.trim());
   mainEl.style.flex = '0 0 auto';
@@ -585,6 +710,30 @@ function buildHome() {
   hero.append(logo);
   body.append(hero);
 
+  // 一键试玩：新玩家不必先研究四种模式和地图就能进入训练场。
+  const quickActions = h('div', 'home-quick');
+  const practice = h('button', 'home-quick-play');
+  practice.type = 'button';
+  practice.id = 'btn-quick-training';
+  practice.append(icon('play', 22), h('span', 'home-quick-copy'));
+  practice.querySelector('.home-quick-copy').append(
+    h('b', null, '立即试玩'),
+    h('small', null, '15 名 AI · 离线训练 · 无需组队'),
+  );
+  practice.addEventListener('click', () => {
+    playAudio('ui_click');
+    uiState.mode = 'training';
+    uiState.difficulty = 'recruit';
+    startOffline();
+  });
+  const custom = h('button', 'home-quick-custom');
+  custom.type = 'button';
+  custom.id = 'btn-custom-match';
+  custom.append(h('b', null, '自定义战局'), h('span', null, '选择模式与地图 →'));
+  custom.addEventListener('click', () => { playAudio('ui_click'); openScreen('play'); });
+  quickActions.append(practice, custom);
+  body.append(quickActions);
+
   // 导航
   const nav = h('div', 'home-nav');
   nav.setAttribute('role', 'navigation');
@@ -595,8 +744,10 @@ function buildHome() {
     btn.type = 'button';
     btn.dataset.nav = item.id;
     btn.id = HOME_NAV_IDS[item.id] || `nav-${item.id}`;
-    btn.setAttribute('aria-label', `${item.name} · ${item.desc}`);
-    btn.append(h('b', null, item.name), h('small', null, `${item.en} · ${item.desc}`), h('span', 'arrow', '↗'));
+    btn.setAttribute('aria-label', `${item.name} ${item.en} · ${item.desc}`);
+    const arrow = h('span', 'arrow', '↗');
+    arrow.setAttribute('aria-hidden', 'true');
+    btn.append(h('b', null, item.name), h('small', null, `${item.en} · ${item.desc}`), arrow);
     const dot = h('span', 'badge dot');
     dot.dataset.badge = item.id;
     dot.style.display = 'none';
@@ -609,7 +760,8 @@ function buildHome() {
   // 底部：版本/提示在左，玩家卡片在右下
   const foot = h('div', 'home-foot');
   const hint = h('span', 'hint', touchDevice ? '左摇杆移动 · 右摇杆瞄准开火' : 'WASD 移动 · 鼠标瞄准射击 · Esc 呼出菜单');
-  const version = h('span', 'version', `v${VERSION} · BUILD 1.0.0`);
+  // BUILD 段必须跟 VERSION 走：硬编码会让页面同时显示「v1.2.0 · BUILD 1.0.0」两个版本号。
+  const version = h('span', 'version', `v${VERSION} · BUILD ${VERSION}`);
   version.id = 'version-label';
   foot.append(hint, version);
 
@@ -627,6 +779,9 @@ function buildHome() {
   fill.dataset.role = 'xp-fill';
   bar.append(fill);
   const creditLine = h('div', 'currency');
+  // 全局唯一的 #currency-credits 留在主菜单玩家卡上（契约 §11）；二级页顶栏用
+  // data-role="currency-credits" 标识，避免同屏出现 7 个重复 id。
+  creditLine.id = 'currency-credits';
   creditLine.append(h('b', 'js-credits', '0'), h('small', null, '信用点'));
   metaWrap.append(nameLine, rankLine, bar, creditLine);
   player.append(levelRing, metaWrap);
@@ -639,13 +794,26 @@ function buildHome() {
 }
 
 // ── 09 · 出击 / 模式与地图选择 ───────────────────────────────────────────────
+// 数值必须与 shared/rules.mjs 对齐（只读引用，不反向依赖）：
+//   - 离线单人 maxPlayers=32，联机才补到 MAX_PLAYERS(64)（见 main.js buildOfflineMatch）
+//   - HORDE.waves=20 / baseHp=800 / 复活 6–14 秒分段，此前文案写的是 10 波 · 8 秒
+const SOLO_OFFLINE_CAP = 32;
+const SOLO_SIZE = `${MAX_PLAYERS} 人联机 · ${SOLO_OFFLINE_CAP} 人离线`;
 const MODE_LIST = [
-  { id: 'solo', name: '单人生存', en: 'SOLO', desc: '64 人各自为战，没有队友，只有最后的幸存者。', meta: '64 人 · 单排 · 约 7 分钟' },
+  { id: 'solo', name: '单人生存', en: 'SOLO', desc: `${MAX_PLAYERS} 人各自为战，没有队友，只有最后的幸存者。`, meta: `${SOLO_SIZE} · 单排 · 约 7 分钟` },
   { id: 'squad', name: '四人小队', en: 'SQUAD', desc: '四人协同搜刮、扶起倒地的队友，一起撑到决赛圈。', meta: '16 队 · 四人 · 约 8 分钟' },
-  { id: 'horde', name: '生存波次', en: 'HORDE', desc: '守住基地，抵御十波侵蚀者。阵亡后 8 秒重返战场。', meta: '4 人协作 · 10 波 · 约 10 分钟' },
+  {
+    id: 'horde', name: '生存波次', en: 'HORDE',
+    desc: `守住基地，抵御 ${HORDE.waves} 波侵蚀者。阵亡后 ${HORDE.reviveAfter}–${HORDE.reviveTiers[HORDE.reviveTiers.length - 1].time} 秒重返战场。`,
+    meta: `4 人协作 · ${HORDE.waves} 波 · 基地 ${HORDE.baseHp} · 约 10 分钟`,
+  },
   { id: 'training', name: '训练场', en: 'TRAINING', desc: '与 15 名 AI 对战，熟悉枪械手感与地图路线。', meta: '离线可玩 · 自由练习' },
 ];
-const uiState = { mode: 'squad', mapId: 'qinglan', difficulty: 'veteran', storeTab: 'character', codexTab: 'weapon' };
+const uiState = {
+  mode: 'squad', mapId: 'qinglan', difficulty: 'veteran', storeTab: 'character', codexTab: 'weapon',
+  // 从「对局暂停 → 作战设置」进入时置 true，设置页的返回按钮据此回到暂停菜单
+  returnToPause: false,
+};
 
 function buildPlay() {
   const head = screenHead('DEPLOYMENT', '选择你的战场', '确认模式、地图与敌人强度后出发。空位由 AI 补满。');
@@ -659,10 +827,10 @@ function buildPlay() {
     btn.type = 'button';
     btn.dataset.mode = mode.id;
     btn.id = `mode-${mode.id}`;
-    btn.setAttribute('aria-label', `${mode.name}，${mode.meta}`);
     const ic = h('span', 'mode-icon');
     ic.append(icon(mode.id === 'solo' ? 'target' : mode.id === 'squad' ? 'users' : mode.id === 'horde' ? 'waves' : 'gamepad', 22));
     btn.append(ic, h('b', 'mode-name', mode.name), h('small', 'mode-desc', mode.desc), h('span', 'mode-meta', mode.meta));
+    syncLabel(btn);
     btn.addEventListener('click', () => { uiState.mode = mode.id; renderPlaySelection(); playAudio('ui_click'); });
     modes.append(btn);
   }
@@ -678,7 +846,7 @@ function buildPlay() {
     btn.type = 'button';
     btn.dataset.map = map.id;
     btn.id = `map-${map.id}`;
-    btn.setAttribute('aria-label', `${map.name}，难度 ${map.difficulty}/3，${map.description || ''}`);
+    const diffText = `难度 ${map.difficulty || 1}/3`;
     // 地图缩略完全由 CSS 依据 data-map 绘制（.map-art::after 岛屿剪影）
     btn.append(h('div', 'map-art'));
     const info = h('div', 'map-info');
@@ -693,6 +861,9 @@ function buildPlay() {
     diff.append(h('small', 'muted', '难度'), diffDots(map.difficulty || 1));
     info.append(diff);
     btn.append(info);
+    syncLabel(btn);
+    // 视觉上用圆点表示难度，可访问名里补上文字（圆点本身 aria-hidden 后不参与命名）
+    btn.setAttribute('aria-label', `${btn.getAttribute('aria-label')} ${diffText}`);
     btn.addEventListener('click', () => { uiState.mapId = map.id; renderPlaySelection(); playAudio('ui_click'); });
     maps.append(btn);
   }
@@ -808,7 +979,12 @@ function weaponOf(id) { return weaponTable()[id] || null; }
 function attachmentsForWeapon(weaponId) {
   const weapon = weaponOf(weaponId);
   const slots = weapon?.slots || ['optic', 'muzzle', 'mag', 'grip'];
-  return Object.values(attachmentTable()).filter(att => slots.includes(att.slot) || !att.slot);
+  const all = Object.values(attachmentTable()).filter((att) => slots.includes(att.slot) || !att.slot);
+  // 武器精通未解锁的配件不展示（app.mastery 由 main.js 挂载）
+  const tracker = (typeof app !== 'undefined' && app && app.mastery) || null;
+  if (!tracker || typeof tracker.unlockedAttachments !== 'function') return all;
+  const unlocked = new Set(tracker.unlockedAttachments(weaponId));
+  return all.filter((att) => unlocked.has(att.id));
 }
 function currentAttachment(slotId) {
   const att = loadout().attachments?.[slotId];
@@ -826,13 +1002,13 @@ function buildLoadout() {
     card.type = 'button';
     card.dataset.slot = def.key;
     card.id = `loadout-slot-${def.key}`;
-    card.setAttribute('aria-label', `${def.name}选择`);
     const art = h('div', 'slot-art');
     const name = h('b', null, def.name);
     const sub = h('small', 'muted');
     const info = h('span', 'slot-body slot-info');
     info.append(name, sub);
     card.append(h('span', 'keycap', def.key === 'primary' ? '1' : '2'), art, info);
+    syncLabel(card);
     card.addEventListener('click', () => { playAudio('ui_click'); pickWeaponFor(def.key); });
     slotsRow.append(card);
   }
@@ -848,10 +1024,10 @@ function buildLoadout() {
     btn.type = 'button';
     btn.dataset.attach = slot.id;
     btn.id = `attach-${slot.id}`;
-    btn.setAttribute('aria-label', `${slot.name}槽`);
     const info = h('span', 'slot-body');
     info.append(h('small', 'muted', slot.name), h('b', null, '空'));
     btn.append(info);
+    syncLabel(btn);
     btn.addEventListener('click', () => { playAudio('ui_click'); pickAttachment(slot.id); });
     attachGrid.append(btn);
   }
@@ -872,10 +1048,10 @@ function buildLoadout() {
     btn.type = 'button';
     btn.dataset.consumable = id;
     btn.id = `consumable-${id}`;
-    btn.setAttribute('aria-label', `${def.name}，开局携带`);
     btn.title = def.desc || def.name || '';
     btn.append(h('b', null, def.name || id));
     if (def.heal) btn.append(h('small', null, `+${def.heal} 生命`));
+    syncLabel(btn);
     btn.addEventListener('click', () => equipConsumable(id));
     chipRow.append(btn);
   }
@@ -895,10 +1071,10 @@ function buildLoadout() {
     btn.type = 'button';
     btn.dataset.throwable = id;
     btn.id = `throwable-${id}`;
-    btn.setAttribute('aria-label', `${def.name}，开局携带`);
     btn.title = def.desc || def.name || '';
     btn.append(h('b', null, def.name || id));
     if (def.damage) btn.append(h('small', null, `${def.damage} 伤害`));
+    syncLabel(btn);
     btn.addEventListener('click', () => equipThrowable(id));
     throwRow.append(btn);
   }
@@ -934,6 +1110,14 @@ function buildLoadout() {
   statsPanel.append(statsBox);
   side.append(statsPanel);
 
+  const comparePanel = h('section', 'panel');
+  const compareHead = h('div', 'panel-head');
+  compareHead.append(h('h3', null, '装备对比'), h('small', 'muted', '当前 vs 候选'));
+  const compareBox = h('div', 'panel-body');
+  compareBox.id = 'loadout-compare';
+  comparePanel.append(compareHead, compareBox);
+  side.append(comparePanel);
+
   return screenShell({ name: 'loadout', head, main: content, side, mainClass: 'loadout-main' });
 }
 
@@ -958,6 +1142,8 @@ function renderLoadout() {
       art.append(icon(w ? 'target' : 'plus', 22));
       if (w) art.style.setProperty('--rarity', rarityColor(w.rarity));
     }
+    // 槽位内容会在运行期改写（换武器/装配件），可读名必须跟着可见文本走
+    syncLabel(card);
   }
   for (const slot of ATTACH_SLOTS) {
     const btn = $(`#attach-${slot.id}`, el);
@@ -966,6 +1152,7 @@ function renderLoadout() {
     const value = $('.slot-body b', btn);
     setText(value, equipped.length ? attachmentTable()[equipped[0]]?.name || equipped[0] : '空');
     btn.classList.toggle('filled', equipped.length > 0);
+    syncLabel(btn);
   }
   for (const btn of el.querySelectorAll('[data-consumable]')) {
     const active = btn.dataset.consumable === (lo.consumable || 'medkit');
@@ -979,6 +1166,7 @@ function renderLoadout() {
   }
   renderSkins();
   renderLoadoutStats();
+  renderComparePanel();
 }
 
 function renderSkins() {
@@ -1034,37 +1222,131 @@ function renderLoadoutStats() {
   }
 }
 
+/** 武器数值归一化：把不同量纲换算到 0–100 的对比刻度。 */
+function weaponMetrics(weapon) {
+  const w = weapon || {};
+  const interval = Number(w.interval) || 0.12;
+  const rpm = Math.round(60 / Math.max(0.02, interval));
+  const spread = Number(w.spread) || 0.03;
+  const accuracy = Math.round(Math.max(0, Math.min(100, (1 - spread * 12) * 100)));
+  return [
+    { key: 'damage', label: '伤害', value: Math.round(Number(w.damage) || 0), max: 130, scale: v => (v / 130) * 100 },
+    { key: 'rpm', label: '射速', value: rpm, max: 900, scale: v => (v / 900) * 100 },
+    { key: 'accuracy', label: '精度', value: accuracy, max: 100, scale: v => v },
+    { key: 'range', label: '射程', value: Math.round(Number(w.range) || 0), max: 120, scale: v => (v / 120) * 100 },
+    { key: 'magazine', label: '弹匣', value: Math.round(Number(w.magazine) || 0), max: 80, scale: v => (v / 80) * 100 },
+  ];
+}
+
+/**
+ * 武器对比条：当前装备 vs 候选。差异用绿（更好）/ 红（更差）高亮。
+ * @param {object} current 当前武器定义
+ * @param {object} candidate 候选武器定义
+ */
+function weaponCompare(current, candidate) {
+  const box = h('div', 'ui-cmp');
+  const head = h('div', 'ui-cmp-head');
+  head.append(h('span', null, '当前'), h('b', null, current?.name || DASH),
+    h('span', 'ui-cmp-arrow', '→'), h('span', null, '候选'), h('b', null, candidate?.name || DASH));
+  box.append(head);
+  const cur = weaponMetrics(current);
+  const nxt = weaponMetrics(candidate);
+  for (let i = 0; i < cur.length; i++) {
+    const a = cur[i];
+    const b = nxt[i];
+    const row = h('div', 'ui-cmp-row');
+    row.dataset.metric = a.key;
+    const label = h('span', 'ui-cmp-label', a.label);
+    const track = h('div', 'ui-cmp-track');
+    const fill = h('i');
+    const delta = b.value - a.value;
+    const dir = delta > 0 ? 'up' : delta < 0 ? 'down' : '';
+    if (dir) fill.classList.add(dir);
+    fill.style.width = `${Math.max(2, Math.min(100, b.scale(b.value))).toFixed(1)}%`;
+    track.append(fill);
+    track.setAttribute('role', 'img');
+    track.setAttribute('aria-label', `${a.label} ${a.value} → ${b.value}`);
+    const value = h('span', 'ui-cmp-val');
+    const deltaNode = h('span', `ui-cmp-delta ${dir || 'same'}`);
+    setText(deltaNode, dir === 'up' ? `+${fmtNum(delta)}` : dir === 'down' ? `−${fmtNum(Math.abs(delta))}` : '持平');
+    value.append(deltaNode);
+    row.append(label, track, value);
+    box.append(row);
+  }
+  return box;
+}
+
+/** 装备页右栏「当前 vs 候选」面板（选中武器后填充）。 */
+function renderComparePanel(candidateId = null) {
+  const host = document.getElementById('loadout-compare');
+  if (!host) return;
+  clear(host);
+  const lo = loadout();
+  const current = weaponOf(lo.primary);
+  const candidate = candidateId ? weaponOf(candidateId) : null;
+  if (!current) { host.append(h('p', 'muted', '先装备一把主武器再对比。')); return; }
+  if (!candidate || candidateId === lo.primary) {
+    host.append(h('p', 'muted', '在左侧主武器槽里选择另一把武器，这里会显示逐项数值差异。'));
+    host.append(weaponCompare(current, current));
+    return;
+  }
+  host.append(weaponCompare(current, candidate));
+  const better = weaponMetrics(candidate).filter((m, i) => m.value > weaponMetrics(current)[i].value).length;
+  const note = h('p', 'field-help muted');
+  setText(note, better >= 3 ? '候选在多项数值上更优 —— 换枪会更快解决战斗。'
+    : better === 0 ? '候选没有数值优势，但手感与配装可能更适合你的打法。'
+      : '互有优劣：结合交战距离与配件再决定。');
+  host.append(note);
+}
 function pickWeaponFor(slotKey) {
   const unlockedLevel = playerLevel();
   const options = Object.entries(weaponTable()).map(([id, w]) => ({ id, ...w }));
   const list = h('div', 'pick-list');
+  const compareHost = h('div', 'stack-sm');
+  compareHost.id = 'pick-compare';
+  const equippedId = loadout()[slotKey];
+  const selectRow = (w) => {
+    clear(compareHost);
+    const compare = weaponCompare(weaponOf(equippedId) || w, w);
+    compareHost.append(compare);
+    const hint = h('p', 'field-help muted', `${w.name} · 伤害 ${w.damage ?? DASH} · 射程 ${w.range ?? DASH} 米 · 弹匣 ${w.magazine ?? DASH}`);
+    compareHost.append(hint);
+  };
   for (const w of options) {
     const locked = (w.unlock || 1) > unlockedLevel;
     const row = h('button', `pick-row ${rarityClass(w.rarity)}`);
     row.type = 'button';
     row.disabled = locked;
+    row.dataset.weapon = w.id;
     row.setAttribute('aria-label', `${w.name}${locked ? '，等级未解锁' : ''}`);
     const main = h('span', 'pick-main');
     main.append(h('b', null, w.name), h('small', 'muted', `${w.cls || '通用'} · ${rarityName(w.rarity)}`));
     const right = h('span', 'pick-right');
     if (locked) right.append(h('span', 'badge muted', `LV.${w.unlock} 解锁`));
-    else if (loadout()[slotKey] === w.id) right.append(h('span', 'badge', '已装备'));
+    else if (equippedId === w.id) right.append(h('span', 'badge', '已装备'));
     row.append(main, right);
+    row.addEventListener('focus', () => selectRow(w));
+    row.addEventListener('mouseenter', () => selectRow(w));
     row.addEventListener('click', () => {
       if (locked) return;
       setLoadoutValue(slotKey, w.id);
       hidePickDialog();
       renderLoadout();
+      renderComparePanel();
       toast(`已装备 ${w.name}`);
     });
     list.append(row);
   }
+  const wrap = h('div', 'stack-lg');
+  wrap.append(list, compareHost);
   const picker = showModal('pick-dialog', {
     title: slotKey === 'primary' ? '选择主武器' : '选择副武器',
     eyebrow: 'ARMORY',
-    body: list,
+    hint: '悬停或聚焦任意武器可查看与当前装备的数值对比。',
+    body: wrap,
   });
   picker.querySelector('.modal-card').classList.add('modal-wide');
+  selectRow(weaponOf(equippedId) || options[0] || {});
 }
 
 function setLoadoutValue(key, value) {
@@ -1077,8 +1359,16 @@ function setLoadoutValue(key, value) {
 function equipSkin(id) {
   const m = meta();
   try {
-    if (m?.equipSkin) { m.equipSkin(id); renderLoadout(); toast('外观已更换'); return; }
-  } catch { /* 回退 */ }
+    if (m?.equipSkin) {
+      const result = m.equipSkin(id);
+      if (result && result.ok === false) { toast(result.error === 'locked' ? '尚未拥有该外观' : '无法装备该外观'); return; }
+      playAudio('ui_click');
+      renderLoadout();
+      renderStore();
+      toast('外观已更换');
+      return;
+    }
+  } catch (err) { console.warn('[ui] equipSkin', err); }
   setLoadoutValue('skin', id);
   renderLoadout();
   toast('外观已更换');
@@ -1086,12 +1376,14 @@ function equipSkin(id) {
 
 function equipConsumable(id) {
   setLoadoutValue('consumable', id);
+  playAudio('ui_click');
   renderLoadout();
   toast(`开局携带 ${itemTable()[id]?.name || id}`);
 }
 
 function equipThrowable(id) {
   setLoadoutValue('throwable', id);
+  playAudio('ui_click');
   renderLoadout();
   toast(`开局携带 ${itemTable()[id]?.name || id}`);
 }
@@ -1232,16 +1524,26 @@ function buySkinItem(item, button) {
     message: `花费 ${fmtNum(cost)} 信用点购买「${item.name}」？当前余额 ${fmtNum(credits())}。`,
     confirmText: '确认购买',
     onConfirm: () => {
-      let ok = false;
+      let result = null;
       try {
-        if (m?.buySkin) ok = m.buySkin(item.id) !== false;
-        else if (m?.buy) ok = m.buy('skin', item.id) !== false;
+        if (m?.buyStoreItem) result = m.buyStoreItem(item.id);
+        else if (m?.buySkin) result = m.buySkin(item.id);
       } catch (err) { toast(err?.message || '购买失败'); return; }
-      if (!ok) { toast('信用点不足或已拥有该外观'); return; }
+      const ok = result === true || (result && typeof result === 'object' && result.ok !== false);
+      if (!ok) {
+        const reason = result?.error;
+        if (reason === 'not-enough-credits') toast('信用点不足');
+        else if (reason === 'level-required') toast(`需要等级 ${result.level}`);
+        else toast('暂时无法购买这件外观');
+        return;
+      }
+      playAudio('ui_buy');
       if (button) button.dataset.done = '1';
       renderStore();
+      renderSkins();
       refreshChrome();
       toast(`已获得「${item.name}」`, 2200);
+      flashReward(0, -cost);
     },
   });
 }
@@ -1292,8 +1594,92 @@ function buildMissions() {
   achPanel.append(achHead, achBody);
 
   const content = h('div', 'stack-lg');
-  content.append(groups, achPanel);
+  content.append(missionToolsBar(), groups, achPanel);
   return screenShell({ name: 'missions', head, main: content });
+}
+
+/** 任务页顶部工具条：今日剩余进度条 + 倒计时 + 连续天数 + 一键领取。 */
+function missionToolsBar() {
+  const bar = h('div', 'ui-mission-tools');
+  const label = h('span', 'ui-mission-count', '今日剩余');
+  const daybar = h('div', 'ui-daybar');
+  daybar.setAttribute('role', 'progressbar');
+  daybar.setAttribute('aria-label', '今日剩余时间');
+  daybar.setAttribute('aria-valuemin', '0');
+  daybar.setAttribute('aria-valuemax', '100');
+  const fill = h('i');
+  fill.id = 'ui-daybar-fill';
+  fill.style.width = '0%';
+  daybar.append(fill);
+  const remain = h('span', 'ui-mission-count');
+  remain.id = 'ui-mission-count';
+  const streak = h('span', 'badge', '连续 0 天');
+  streak.id = 'ui-mission-streak';
+  streak.style.display = 'none';
+  const claimAll = h('button', 'ui-btn ui-primary ui-sm');
+  claimAll.type = 'button';
+  claimAll.id = 'btn-claim-all';
+  claimAll.textContent = '一键领取';
+  claimAll.addEventListener('click', () => { playAudio('ui_click'); claimAllMissions(claimAll); });
+  bar.append(label, daybar, remain, streak, h('span', 'spacer'), claimAll);
+  return bar;
+}
+
+/** 任务卡：进度数字 + 进度条 + 领取按钮（v2：可视化进度 / claimable 高亮 / 空态）。 */
+function missionCard(mission, weekly) {
+  const state = missionState(mission.id, weekly);
+  const target = Math.max(1, Number(mission.target) || 1);
+  const progress = Math.min(target, Math.max(0, Number(state.progress) || 0));
+  const pct = Math.max(0, Math.min(100, (progress / target) * 100));
+  const done = !!state.done || pct >= 100;
+  // .mission 是两列 grid：列1 = .mission-meta + .progress，列2 = 按钮（跨两行）
+  const row = h('article', 'mission');
+  row.dataset.mission = mission.id;
+  row.id = `mission-${mission.id}`;
+  if (done && !state.claimed) row.classList.add('claimable');
+  if (state.claimed) row.classList.add('done');
+
+  const metaBox = h('div', 'mission-meta');
+  metaBox.append(h('b', null, mission.title || mission.id));
+  if (mission.desc) metaBox.append(h('small', 'muted', mission.desc));
+  const rewards = h('small', 'mission-reward');
+  rewards.append(h('span', null, `+${mission.xp || 0} XP`), h('span', null, `+${mission.credits || 0} 信用点`));
+  metaBox.append(rewards);
+  row.append(metaBox);
+
+  const bar = h('div', 'progress');
+  const fill = h('i');
+  fill.style.width = `${pct.toFixed(1)}%`;
+  if (pct >= 100) fill.classList.add('full');
+  bar.append(fill);
+  bar.title = missionProgressText(mission, state);
+  bar.setAttribute('role', 'progressbar');
+  bar.setAttribute('aria-valuemin', '0');
+  bar.setAttribute('aria-valuemax', String(target));
+  bar.setAttribute('aria-valuenow', String(progress));
+  row.append(bar);
+  // 进度数字（2/5）：放在 meta 下方，不额外占 grid 行
+  const counter = h('small', 'ui-mission-progress', `${fmtNum(progress)} / ${fmtNum(target)}${state.claimed ? ' · 已领取' : done ? ' · 可领取' : ''}`);
+  metaBox.append(counter);
+
+  const action = h('button', 'btn btn-sm');
+  action.type = 'button';
+  action.id = `btn-claim-${mission.id}`;
+  if (state.claimed) {
+    action.classList.add('btn-ghost', 'claimed');
+    setText(action, '已领取');
+    action.disabled = true;
+  } else if (done) {
+    action.classList.add('btn-primary', 'claimable');
+    setText(action, '领取奖励');
+    action.addEventListener('click', () => claimMission(mission, weekly, action));
+  } else {
+    action.classList.add('btn-ghost');
+    setText(action, '进行中');
+    action.disabled = true;
+  }
+  row.append(action);
+  return row;
 }
 
 function renderMissions() {
@@ -1307,61 +1693,124 @@ function renderMissions() {
     const list = document.getElementById(`mission-list-${group.key}`);
     if (!list) continue;
     clear(list);
-    for (const mission of group.list) {
-      const state = missionState(mission.id, group.key === 'weekly');
-      const row = h('article', 'mission');
-      row.dataset.mission = mission.id;
-      row.id = `mission-${mission.id}`;
-      const iconWrap = h('div', 'mission-icon');
-      iconWrap.append(icon(group.key === 'weekly' ? 'trophy' : 'flag', 20));
-      const bodyBox = h('div', 'mission-meta');
-      const top = h('div', 'row');
-      top.append(h('b', 'mission-title', mission.title || mission.id));
-      const reward = h('span', 'mission-reward');
-      reward.append(h('small', null, `+${mission.xp || 0} 经验`), h('small', null, `+${mission.credits || 0} 信用点`));
-      top.append(reward);
-      bodyBox.append(top);
-      const progress = h('div', 'mission-progress');
-      progress.append(h('small', 'muted', missionProgressText(mission, state)));
-      const bar = h('div', 'progress');
-      const fill = h('i');
-      const pct = Math.max(0, Math.min(100, ((Number(state.progress) || 0) / (mission.target || 1)) * 100));
-      fill.style.width = `${pct.toFixed(1)}%`;
-      if (pct >= 100) fill.classList.add('full');
-      bar.append(fill);
-      progress.append(bar);
-      bodyBox.append(progress);
-      row.append(iconWrap, bodyBox);
-      const action = h('button', 'btn btn-sm');
-      action.type = 'button';
-      const done = !!state.done || pct >= 100;
-      if (state.claimed) {
-        action.classList.add('btn-ghost', 'claimed');
-        setText(action, '已领取');
-        action.disabled = true;
-      } else if (done) {
-        action.classList.add('btn-primary', 'claimable');
-        setText(action, '领取奖励');
-        action.addEventListener('click', () => claimMission(mission, group.key === 'weekly'));
-      } else {
-        action.classList.add('btn-ghost');
-        setText(action, '进行中');
-        action.disabled = true;
-      }
-      row.append(action);
-      list.append(row);
+    if (!group.list.length) {
+      list.append(emptyPanel('本期任务已全部完成', '新的每日任务会在明天 0 点刷新，每周任务在周一刷新。'));
+      continue;
+    }
+    for (const mission of group.list) list.append(missionCard(mission, group.key === 'weekly'));
+    if (group.list.every(m => missionState(m.id, group.key === 'weekly').claimed)) {
+      list.append(emptyPanel('这一栏已经清空', '所有奖励都领取完毕，明天再来。'));
     }
   }
+  updateMissionTools();
   updateMissionCountdown();
 }
 
-function claimMission(mission, weekly) {
+/** 任务页工具条：今日剩余倒计时条 + 一键领取 + 连续天数。 */
+function updateMissionTools() {
+  const el = screenEl('missions');
+  if (!el) return;
+  const fill = document.getElementById('ui-daybar-fill');
+  const count = document.getElementById('ui-mission-count');
+  const claimAll = document.getElementById('btn-claim-all');
+  const streakNode = document.getElementById('ui-mission-streak');
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+  const remain = Math.max(0, next.getTime() - now.getTime());
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, 100 - (remain / 86400000) * 100)).toFixed(1)}%`;
+  if (count) setText(count, `${countdownText(remain)}`);
+  const claimable = [];
+  for (const [key, list] of [['daily', dailyMissions()], ['weekly', weeklyMissions()]]) {
+    for (const mission of list) {
+      const state = missionState(mission.id, key === 'weekly');
+      const done = !!state.done || Number(state.progress) >= (mission.target || 1);
+      if (done && !state.claimed) claimable.push(mission);
+    }
+  }
+  if (claimAll) {
+    setText(claimAll, claimable.length ? `一键领取（${claimable.length}）` : '暂无可领取');
+    claimAll.disabled = claimable.length === 0;
+    claimAll.dataset.claimable = String(claimable.length);
+  }
+  if (streakNode) {
+    const saved = saveData().streak;
+    if (Number.isFinite(Number(saved)) && Number(saved) > 0) {
+      setText(streakNode, `连续 ${fmtNum(saved)} 天`);
+      streakNode.style.display = '';
+    } else {
+      streakNode.style.display = 'none';
+    }
+  }
+}
+
+/** 一键领取：按顺序调用 claimMission，全部结束后一次性 renderMissions。 */
+function claimAllMissions(button) {
+  const targets = [];
+  for (const [key, list] of [['daily', dailyMissions()], ['weekly', weeklyMissions()]]) {
+    for (const mission of list) {
+      const state = missionState(mission.id, key === 'weekly');
+      const done = !!state.done || Number(state.progress) >= (mission.target || 1);
+      if (done && !state.claimed) targets.push({ mission, weekly: key === 'weekly' });
+    }
+  }
+  if (!targets.length) { toast('暂无可领取的任务奖励'); return; }
   const m = meta();
-  let ok = false;
+  let xp = 0; let coin = 0; let ok = 0;
+  withBusy(button, () => {
+    for (const item of targets) {
+      let result = null;
+      try { if (m?.claimMission) result = m.claimMission(item.mission.id); } catch { result = null; }
+      const success = result === true || (result && typeof result === 'object' && result.ok !== false);
+      if (success) { ok += 1; xp += Number(item.mission.xp) || 0; coin += Number(item.mission.credits) || 0; }
+    }
+  }, { label: '领取中…', timeoutMs: 8000, timeoutMessage: '领取超时，请稍后重试' });
+  // withBusy 是同步任务，下一帧再刷新 UI，让 loading 至少出现一帧
+  setTimeout(() => {
+    if (!ok) { toast('没有可领取的奖励'); renderMissions(); return; }
+    playAudio('ui_reward');
+    renderMissions();
+    refreshChrome();
+    toast(`已领取 ${ok} 项 · +${fmtNum(xp)} 经验 · +${fmtNum(coin)} 信用点`, 2800);
+    flashReward(xp, coin);
+  }, 120);
+}
+
+function claimMission(mission, weekly, button = null) {
+  const m = meta();
+  if (button && button.dataset.busy === '1') return;
+  if (button) {
+    // 领取是同步的存档写入：放进 withBusy 只为给出可见 loading 与超时兜底
+    let outcome = { ok: false, message: '' };
+    withBusy(button, () => {
+      let result = null;
+      try { result = m?.claimMission ? m.claimMission(mission.id) : null; } catch (err) { outcome = { ok: false, message: err?.message || '领取失败' }; return; }
+      const success = result === true || (result && typeof result === 'object' && result.ok !== false);
+      if (success) outcome = { ok: true, message: '' };
+      else {
+        const reason = result?.error;
+        outcome = { ok: false, message: reason === 'already-claimed' || reason === 'claimed' ? '奖励已领取'
+          : reason === 'not-complete' || reason === 'incomplete' ? '任务尚未完成' : '暂时无法领取奖励' };
+      }
+    }, { label: '领取中…', timeoutMessage: '领取超时，请稍后重试' });
+    if (!outcome.ok) { if (outcome.message) toast(outcome.message, 2400); return; }
+    applyMissionClaim(mission);
+    return;
+  }
+  let result = null;
   try {
-    if (m?.claimMission) ok = m.claimMission(mission.id) !== false;
+    if (m?.claimMission) result = m.claimMission(mission.id);
   } catch (err) { toast(err?.message || '领取失败'); return; }
-  if (!ok) { toast('任务尚未完成'); return; }
+  const ok = result === true || (result && typeof result === 'object' && result.ok !== false);
+  if (!ok) {
+    const reason = result?.error;
+    toast(reason === 'claimed' ? '奖励已领取' : reason === 'incomplete' ? '任务尚未完成' : '暂时无法领取奖励');
+    return;
+  }
+  applyMissionClaim(mission);
+}
+
+function applyMissionClaim(mission) {
+  playAudio('ui_reward');
   renderMissions();
   refreshChrome();
   toast(`任务完成 · +${mission.xp || 0} 经验 · +${mission.credits || 0} 信用点`, 2800);
@@ -1421,6 +1870,34 @@ function codexEntries(kind) {
   return enemyCatalog().map(e => ({ ...e, kind: 'enemy' }));
 }
 
+/** 图鉴条目解锁条件：返回 { locked, label, hint }。 */
+function codexLockState(entry) {
+  const level = playerLevel();
+  if (entry.kind === 'map') {
+    const need = Number(entry.difficulty) >= 3 ? 12 : Number(entry.difficulty) >= 2 ? 6 : 1;
+    return { locked: level < need, label: `等级 ${need} 解锁`, hint: `达到等级 ${need} 后可进入该战场。` };
+  }
+  if (entry.kind === 'enemy') {
+    const need = (Number(entry.threat) || 1) >= 5 ? 10 : (Number(entry.threat) || 1) >= 3 ? 5 : 1;
+    return { locked: level < need, label: `等级 ${need} 解锁`, hint: `在生存波次中遭遇后解锁完整档案（等级 ${need}）。` };
+  }
+  if (entry.kind === 'attachment') {
+    const need = entry.rarity === 'legendary' ? 18 : entry.rarity === 'epic' ? 12 : entry.rarity === 'rare' ? 6 : 1;
+    return { locked: level < need, label: `等级 ${need} 解锁`, hint: `在战场上拾取过同类配件后解锁（等级 ${need}）。` };
+  }
+  if (entry.kind === 'item') {
+    const need = Number(entry.unlock) || 1;
+    return { locked: level < need, label: `等级 ${need} 解锁`, hint: `等级 ${need} 起可在战场上找到。` };
+  }
+  const need = Number(entry.unlock) || 1;
+  return { locked: level < need, label: `等级 ${need} 解锁`, hint: `达到等级 ${need} 后解锁该武器档案。` };
+}
+
+function codexIconName(kind) {
+  return kind === 'map' ? 'map' : kind === 'enemy' ? 'skull' : kind === 'item' ? 'box'
+    : kind === 'attachment' ? 'crosshair' : 'target';
+}
+
 function renderCodex() {
   const el = screenEl('codex');
   if (!el) return;
@@ -1428,32 +1905,50 @@ function renderCodex() {
     const active = tab.dataset.tab === uiState.codexTab;
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.setAttribute('tabindex', active ? '0' : '-1');
   }
   const grid = document.getElementById('codex-grid');
   if (!grid) return;
   clear(grid);
-  for (const entry of codexEntries(uiState.codexTab)) {
-    const card = h('button', `codex-card ${rarityClass(entry.rarity || 'common')}`);
+  const entries = codexEntries(uiState.codexTab);
+  if (!entries.length) {
+    grid.append(emptyPanel('这一类还没有档案', '继续对局与搜刮，新的条目会自动收录。'));
+    return;
+  }
+  for (const entry of entries) {
+    const lock = codexLockState(entry);
+    const card = h('button', `codex-card ${rarityClass(entry.rarity || 'common')}${lock.locked ? ' ui-locked' : ''}`.trim());
     card.type = 'button';
     card.dataset.kind = entry.kind;
     card.dataset.id = entry.id;
     card.id = `codex-${entry.kind}-${entry.id}`;
-    card.setAttribute('aria-label', `${entry.name || entry.id} 详情`);
     const art = h('div', 'codex-art');
     art.dataset.kind = entry.kind;
-    art.append(icon(entry.kind === 'map' ? 'map' : entry.kind === 'enemy' ? 'skull' : entry.kind === 'item' ? 'box' : entry.kind === 'attachment' ? 'crosshair' : 'target', 24));
+    art.append(icon(lock.locked ? 'lock' : codexIconName(entry.kind), 24));
     const meta = h('div', 'codex-meta');
     meta.append(h('b', 'item-name', entry.name || entry.id));
     const sub = entry.kind === 'map' ? `${entry.regions?.length || 0} 区域 · 难度 ${entry.difficulty || 1}`
       : entry.kind === 'enemy' ? `威胁 ${entry.threat || 1} · 生命 ${entry.hp || DASH}`
         : entry.kind === 'attachment' ? `${entry.slot || '通用'} · ${rarityName(entry.rarity)}`
           : rarityName(entry.rarity || 'common');
-    meta.append(h('small', 'muted', sub));
+    const subLine = h('small', 'muted');
+    if (entry.rarity) subLine.append(rarityMarkNode(entry.rarity), h('span', null, ` ${sub}`));
+    else subLine.append(h('span', null, sub));
+    meta.append(subLine);
+    if (lock.locked) {
+      const tag = h('span', 'ui-lock-tag');
+      tag.append(icon('lock', 11), h('span', null, lock.label));
+      meta.append(tag);
+    }
     card.append(art, meta);
-    if (entry.kind === 'weapon') {
+    if (entry.kind === 'weapon' && !lock.locked) {
       card.append(h('span', 'codex-badge', `${entry.damage || 0} 伤害`));
     }
-    card.addEventListener('click', () => openCodexDetail(entry.kind, entry.id));
+    syncLabel(card);
+    card.addEventListener('click', () => {
+      if (lock.locked) { playAudio('ui_deny'); toast(`尚未解锁 · ${lock.hint}`, 2600); return; }
+      openCodexDetail(entry.kind, entry.id);
+    });
     grid.append(card);
   }
 }
@@ -1468,14 +1963,18 @@ export function openCodexDetail(kind, id) {
   if (!entry) { toast('暂时没有这条档案'); return; }
   if (entry.kind === 'map' || kind === 'map') { showFullMap(entry); return; }
   const bodyBox = h('div', 'codex-detail');
-  const hero = h('div', `codex-hero ${rarityClass(entry.rarity || 'common')}`);
-  hero.append(icon(kind === 'enemy' ? 'skull' : kind === 'item' ? 'box' : 'target', 34));
+  const hero = h('div', `codex-hero ${rarityClass(entry.rarity || 'common')} ui-codex-detail-head`);
+  const bigIcon = h('div', 'ui-codex-big-icon');
+  bigIcon.style.cssText = 'display:grid;place-items:center;width:64px;height:64px;flex:0 0 auto;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:rgba(9,30,31,.8);color:var(--c-teal-300,#6fe0c8)';
+  bigIcon.append(icon(codexIconName(kind), 34));
+  hero.append(bigIcon);
   const headInfo = h('div', 'codex-hero-info');
   headInfo.append(h('h3', 'title-md', entry.name || id), h('div', 'row'));
   const tagRow = headInfo.querySelector('.row');
   if (entry.rarity) tagRow.append(rarityTag(entry.rarity));
   if (entry.cls) tagRow.append(h('span', 'chip chip-xs', entry.cls));
   if (entry.ammo) tagRow.append(h('span', 'chip chip-xs', `弹药 · ${entry.ammo}`));
+  if (entry.kind === 'map') tagRow.append(h('span', 'chip chip-xs', `${entry.regions?.length || 0} 区域`));
   hero.append(headInfo);
   bodyBox.append(hero);
   bodyBox.append(h('p', 'codex-desc', entry.desc || entry.description || '暂无更多资料。'));
@@ -1490,6 +1989,15 @@ export function openCodexDetail(kind, id) {
     if (entry.shield) rows.push(['护盾', entry.shield, 100]);
     if (entry.use) rows.push(['使用时间', entry.use, 5]);
     if (entry.radius) rows.push(['半径', entry.radius, 10]);
+    if (entry.damage) rows.push(['伤害', entry.damage, 140]);
+    if (entry.fuse) rows.push(['引信', entry.fuse, 5]);
+    if (entry.duration) rows.push(['持续', entry.duration, 30]);
+    if (entry.stack) rows.push(['堆叠上限', entry.stack, 10]);
+  } else if (entry.kind === 'attachment') {
+    if (entry.spreadMul != null) rows.push(['散布倍率', Number(entry.spreadMul).toFixed(2), 2]);
+    if (entry.reloadMul != null) rows.push(['换弹倍率', Number(entry.reloadMul).toFixed(2), 2]);
+    if (entry.magMul != null) rows.push(['弹匣倍率', Number(entry.magMul).toFixed(2), 3]);
+    if (entry.zoom) rows.push(['倍率', entry.zoom, 6]);
   }
   if (rows.length) {
     const statRows = h('div', 'stat-rows');
@@ -1509,7 +2017,27 @@ export function openCodexDetail(kind, id) {
     }
     bodyBox.append(list);
   }
-  showModal('codex-dialog', { title: '档案详情', eyebrow: 'CODEX ENTRY', body: bodyBox });
+  // 解锁条件（灰显条目也允许从外部 API 打开，这里给出明确说明）
+  const lock = codexLockState(entry);
+  const cond = h('div', 'ui-codex-cond');
+  cond.append(h('span', 'chip chip-xs', `等级需求 ${Number(entry.unlock) || 1}`));
+  if (entry.rarity) cond.append(h('span', 'chip chip-xs', `稀有度 ${rarityName(entry.rarity)}`));
+  if (entry.kind === 'weapon' && entry.tier) cond.append(h('span', 'chip chip-xs', `T${entry.tier} 战场`));
+  bodyBox.append(cond);
+  if (lock.locked) {
+    const note = h('div', 'ui-codex-lock-note');
+    note.id = 'codex-lock-note';
+    note.append(h('b', null, `尚未解锁 · ${lock.label}`), h('div', null, lock.hint));
+    bodyBox.append(note);
+  }
+  const modal = showModal('codex-dialog', {
+    title: '档案详情',
+    eyebrow: 'CODEX ENTRY',
+    hint: entry.kind === 'weapon' ? '数值为本体白板，配件会进一步改变手感。' : '',
+    body: bodyBox,
+    wide: true,
+  });
+  modal.querySelector('.modal-card')?.classList.add('modal-wide');
 }
 
 // ── 14 · 生涯 ───────────────────────────────────────────────────────────────
@@ -1517,7 +2045,8 @@ function buildCareer() {
   const head = screenHead('CAREER', '生涯档案', '你的每一场战斗都会记录在这里。');
 
   const content = h('div', 'stack-lg');
-  const overview = h('section', 'panel career-head');
+  // 注意：不要同时挂 .panel（.panel 是 flex-direction:column，会把 .career-head 的横排覆盖成竖排居中）
+  const overview = h('section', 'career-head');
   overview.id = 'career-overview';
   content.append(overview);
 
@@ -1527,6 +2056,12 @@ function buildCareer() {
   const statGrid = h('div', 'stat-grid career-stats panel-body');
   statGrid.id = 'career-stats';
   statPanel.append(statHead, statGrid);
+
+  // 武器使用分布（按击杀降序，最多 6 把）。没有数据时整块隐藏，避免空标题。
+  const weaponBox = h('div', 'career-weapons panel-body hidden');
+  weaponBox.id = 'career-weapons';
+  weaponBox.setAttribute('aria-label', '常用武器击杀分布');
+  statPanel.append(weaponBox);
   content.append(statPanel);
 
   const achPanel = h('section', 'panel');
@@ -1578,26 +2113,61 @@ function renderCareer() {
     overview.append(levelRing, right);
   }
 
+  // 生涯统计：优先用 CareerStats（K/D、胜率、命中率、场均伤害、武器分布），
+  // 老存档没有 careerStats 时自动回落到 meta.stats 的少量字段。
   const stats = saveData().stats || {};
+  const career = (() => { try { return app?.career?.summary?.() || null; } catch { return null; } })();
+  const c = career || {};
   const grid = document.getElementById('career-stats');
   if (grid) {
     clear(grid);
+    const pct = (v) => `${(Number(v) || 0).toFixed(1)}%`;
     const rows = [
-      ['对局场次', fmtNum(stats.matches || 0)],
-      ['胜场', fmtNum(stats.wins || 0)],
-      ['淘汰数', fmtNum(stats.kills || 0)],
-      ['场均伤害', fmtNum((stats.damage || 0) / Math.max(1, stats.matches || 1))],
-      ['最长生存', fmtTime(stats.survived || 0)],
-      ['最佳名次', stats.bestPlacement ? `#${stats.bestPlacement}` : DASH],
-      ['当前连胜', fmtNum(stats.streak || 0)],
-      ['最高连胜', fmtNum(stats.bestStreak || 0)],
+      ['对局场次', fmtNum(c.matches ?? stats.matches ?? 0)],
+      ['胜场', fmtNum(c.wins ?? stats.wins ?? 0)],
+      ['胜率', career ? pct(c.winRatePct) : DASH],
+      ['K/D', career ? (Number(c.kd) || 0).toFixed(2) : DASH],
+      ['淘汰数', fmtNum(c.kills ?? stats.kills ?? 0)],
+      ['场均淘汰', career ? (Number(c.avgKills) || 0).toFixed(2) : DASH],
+      ['场均伤害', fmtNum(career ? c.avgDamage : (stats.damage || 0) / Math.max(1, stats.matches || 1))],
+      ['命中率', career ? pct(c.accuracy) : DASH],
+      ['爆头率', career ? pct(c.headshotRate) : DASH],
+      ['场均生存', career ? fmtTime(c.avgSurvival) : fmtTime(stats.survived || 0)],
+      ['最佳名次', (c.bestPlacement || stats.bestPlacement) ? `#${c.bestPlacement || stats.bestPlacement}` : DASH],
+      ['当前连胜', fmtNum(c.streak ?? stats.streak ?? 0)],
+      ['最高连胜', fmtNum(c.bestStreak ?? stats.bestStreak ?? 0)],
       ['波次纪录', fmtNum(stats.hordeWaves || 0)],
       ['段位分', fmtNum(rating())],
+      ['总游玩时长', career ? fmtTime(c.playTime) : DASH],
     ];
     for (const [label, value] of rows) {
       const card = h('div', 'stat');
       card.append(h('small', null, label), h('b', null, value));
       grid.append(card);
+    }
+  }
+  // 武器使用分布：按击杀降序，显示前 6 把（没有数据时整块隐藏）
+  const weaponBox = document.getElementById('career-weapons');
+  if (weaponBox) {
+    clear(weaponBox);
+    let rows = [];
+    try { rows = app?.career?.weaponBreakdown?.() || []; } catch { rows = []; }
+    rows = rows.filter(r => (Number(r.kills) || 0) > 0).slice(0, 6);
+    if (!rows.length) {
+      weaponBox.classList.add('hidden');
+    } else {
+      weaponBox.classList.remove('hidden');
+      const top = Math.max(1, ...rows.map(r => Number(r.kills) || 0));
+      for (const row of rows) {
+        const line = h('div', 'career-weapon-row');
+        line.append(h('small', null, row.name || row.weaponId));
+        const bar = h('div', 'progress progress-sm');
+        const fill = h('i');
+        fill.style.width = `${Math.round(((Number(row.kills) || 0) / top) * 100)}%`;
+        bar.append(fill);
+        line.append(bar, h('b', null, fmtNum(row.kills)));
+        weaponBox.append(line);
+      }
     }
   }
 
@@ -1653,11 +2223,17 @@ function renderCareer() {
 
 function claimAchievement(ach) {
   const m = meta();
-  let ok = false;
+  let result = null;
   try {
-    if (m?.claimAchievement) ok = m.claimAchievement(ach.id) !== false;
+    if (m?.claimAchievement) result = m.claimAchievement(ach.id);
   } catch (err) { toast(err?.message || '领取失败'); return; }
-  if (!ok) { toast('成就尚未完成'); return; }
+  const ok = result === true || (result && typeof result === 'object' && result.ok !== false);
+  if (!ok) {
+    const reason = result?.error;
+    toast(reason === 'claimed' ? '奖励已领取' : reason === 'incomplete' ? '成就尚未完成' : '暂时无法领取奖励');
+    return;
+  }
+  playAudio('ui_reward');
   renderCareer();
   refreshChrome();
   toast(`成就达成 · ${ach.title}`, 2600);
@@ -1822,7 +2398,15 @@ function buildSettings() {
   resetBtn.id = 'btn-reset-save';
   resetBtn.addEventListener('click', () => { playAudio('ui_click'); confirmResetSave(); });
   resetRow.append(resetBtn);
-  const guidePanel = panel('settings-guide', 'help', '引导与存档', [helpRow, tutorialRow, resetRow]);
+  // 遥测：默认关闭，必须玩家主动开启。此前这个开关根本不存在 —— shared/telemetry.mjs
+  // 与 docs/TELEMETRY-WIRING.md 都写了「玩家可在设置页开启」，但设置页里 grep 不到
+  // 任何 telemetry 字样，导致遥测永远是关闭状态（合规叙事成立、功能为零）。
+  const telemetryRow = settingRow('匿名游戏数据', '仅统计对局与崩溃，不含昵称、账号与设备标识；可随时关闭');
+  const telemetryToggle = buildToggle(!!s.telemetry, value => updateSetting('telemetry', value), '匿名游戏数据');
+  telemetryToggle.id = 'telemetry-toggle';
+  telemetryRow.append(telemetryToggle);
+
+  const guidePanel = panel('settings-guide', 'help', '引导与存档', [helpRow, tutorialRow, telemetryRow, resetRow]);
 
   columns.append(audioPanel, displayPanel, controlsPanel, guidePanel);
   const content = h('div', 'stack-lg');
@@ -1831,11 +2415,15 @@ function buildSettings() {
 }
 
 function updateSetting(key, value) {
+  // 1) 写进存档（main.js 的 applySettings 会用 meta.data.settings 覆盖 app.settings，
+  //    所以必须先落盘，否则滑条会被旧值回弹）
+  try { meta()?.setSettings?.({ [key]: value }); } catch (err) { console.warn('[ui] 设置存档失败', err); }
+  // 2) 同步到 app.settings 并让 main.js 应用（音频/画质/输入/HUD）
   try { if (app?.settings) app.settings[key] = value; } catch { /* 忽略只读 settings */ }
   try {
     if (app?.applySettings) app.applySettings(key);
     else if (app?.saveSettings) app.saveSettings();
-  } catch (err) { console.warn('[ui] 设置保存失败', err); }
+  } catch (err) { console.warn('[ui] 设置应用失败', err); }
 }
 
 function restartTutorial() {
@@ -1844,8 +2432,14 @@ function restartTutorial() {
     message: '将从头展示移动、射击、搜刮与救援的操作提示，不影响现有存档。',
     confirmText: '开始引导',
     onConfirm: () => {
+      // 先清掉存档里的 tutorialDone（main.js 那份），再把引导层真正拉起来。
+      // 历史实现只弹一个 toast：按钮写着「重新播放」，屏幕上什么也没发生。
       try { app?.restartTutorial?.(); } catch { /* 忽略 */ }
-      toast('新手引导已重新启动', 2400);
+      // 设置页可能盖在引导层之上 → 先回主菜单再展示，避免引导被弹窗挡住。
+      if (activeScreen && activeScreen !== 'home') openScreen('home');
+      hideAllDialogs();
+      const shown = maybeShowOnboarding({ force: true });
+      if (!shown) toast('新手引导已重置', 2400);
     },
   });
 }
@@ -1890,11 +2484,23 @@ function ensureDialog(id) {
   close.type = 'button';
   close.setAttribute('aria-label', '关闭');
   close.append(icon('close', 18));
-  close.addEventListener('click', () => hideDialog(id));
+  // 关键：static 弹窗（结算/暂停/房间）不允许“关掉但留在战场”。
+  // 关 X 必须等价于该弹窗的“离开”语义，否则会出现无 UI 的幽灵战场（P0）。
+  close.addEventListener('click', () => {
+    playAudio('ui_click');
+    if (node.dataset.static === '1') {
+      if (id === 'result-dialog') { leaveResultToHome(); return; }
+      if (id === 'pause-dialog') { resumeFromPause(); return; }
+      if (id === 'room-dialog') { hideRoom(); try { app?.leaveMatch?.(); } catch { /* 忽略 */ } return; }
+    }
+    hideDialog(id);
+  });
   card.append(close);
   const head = h('div', 'modal-head');
   const eyebrow = h('div', 'eyebrow');
   const title = h('h2', 'modal-title');
+  title.id = `${id}-title`;
+  node.setAttribute('aria-labelledby', title.id); // 每个弹窗都靠自己的标题命名（WCAG 4.1.2）
   const hint = h('p', 'modal-hint muted');
   head.append(eyebrow, title, hint);
   const body = h('div', 'modal-body');
@@ -2157,16 +2763,23 @@ function connectOnline(kind) {
 function startOffline() {
   hideAllDialogs();
   try {
-    const result = app?.startOffline?.(uiState.mode, {
+    if (typeof app?.startOffline !== 'function') throw new Error('游戏尚未初始化，请稍后重试');
+    const result = app.startOffline(uiState.mode, {
       mapId: uiState.mapId,
       difficulty: uiState.difficulty,
       loadout: loadout(),
       profile: meta()?.data,
     });
-    if (result && typeof result.then === 'function') result.catch(err => toast(err?.message || '无法开始行动', 3000));
+    if (result && typeof result.then === 'function') {
+      result.then(() => closeScreens()).catch(err => toast(err?.message || '无法开始行动', 3000));
+      return true;
+    }
+    if (result?.ok === false) throw new Error(result.message || '无法开始行动');
     closeScreens();
+    return true;
   } catch (err) {
     toast(err?.message || '无法开始行动', 3000);
+    return false;
   }
 }
 
@@ -2184,19 +2797,42 @@ function buildRoomDialog() {
   copy.id = 'btn-copy-code';
   copy.addEventListener('click', () => {
     const value = code.textContent || '';
-    try { navigator.clipboard?.writeText(value); toast('邀请码已复制'); } catch { toast(`邀请码：${value}`); }
+    playAudio('ui_click');
+    try {
+      navigator.clipboard?.writeText(value).then(() => toast('邀请码已复制'), () => toast(`邀请码：${value}`));
+      if (!navigator.clipboard) toast(`邀请码：${value}`);
+    } catch { toast(`邀请码：${value}`); }
   });
   codeBox.append(copy);
   const hint = h('p', 'modal-hint muted');
   hint.id = 'room-hint';
+  const dropzone = h('button', 'btn btn-ghost btn-sm room-dropzone-btn', '降落区投票');
+  dropzone.type = 'button';
+  dropzone.id = 'btn-dropzone';
+  dropzone.setAttribute('aria-label', '打开降落区投票地图');
+  dropzone.addEventListener('click', () => { playAudio('ui_click'); showDropZone(); });
+  // 空降方式：房主可切「跳伞 / 直接落地」。跳伞会让开局多 20 秒左右，
+  // 但换来选点与开局的紧张感；默认沿用房间当前设置（服务端 lobby.deployStyle）。
+  const deployBtn = h('button', 'btn btn-ghost btn-sm room-deploy-btn');
+  deployBtn.type = 'button';
+  deployBtn.id = 'btn-deploy-style';
+  deployBtn.addEventListener('click', () => {
+    playAudio('ui_click');
+    const next = (netState.lastLobby?.deployStyle === 'skydive') ? 'instant' : 'skydive';
+    try {
+      if (app?.setDeployStyle) app.setDeployStyle(next);
+      else app?.net?.send?.({ type: 'config', deployStyle: next });
+    } catch (err) { toast(err?.message || '无法切换空降方式'); }
+  });
   const list = h('div', 'room-players');
   list.id = 'room-players';
-  wrap.append(codeBox, hint, list);
+  wrap.append(codeBox, hint, dropzone, deployBtn, list);
   const actions = h('div', 'room-actions');
   const start = h('button', 'btn btn-primary', '开始战斗');
   start.type = 'button';
   start.id = 'btn-start-room';
   start.addEventListener('click', () => {
+    playAudio('ui_click');
     try {
       if (app?.startRoom) app.startRoom();
       else if (app?.net?.send) app.net.send({ type: 'start' });
@@ -2207,9 +2843,11 @@ function buildRoomDialog() {
   ready.type = 'button';
   ready.id = 'btn-ready-room';
   ready.addEventListener('click', () => {
+    playAudio('ui_click');
     ready.classList.toggle('active');
     const isReady = ready.classList.contains('active');
     setText(ready, isReady ? '已准备' : '准备');
+    ready.setAttribute('aria-pressed', isReady ? 'true' : 'false');
     try { app?.setReady?.(isReady) ?? app?.net?.send?.({ type: 'input', input: { ready: isReady } }); } catch { /* 忽略 */ }
   });
   const leave = h('button', 'btn btn-danger', '离开房间');
@@ -2238,6 +2876,23 @@ export function showRoom(lobby) {
 }
 export function updateLobby(lobby) {
   if (!lobby) return;
+  netState.lastLobby = lobby;
+  // 对局已经开始（loading / live / ended）时**绝不能再把房间弹窗打开**。
+  //
+  // 历史 bug：服务端在开局后仍会补发 lobby 广播，而这里只要弹窗不是 open 就
+  // showRoom() —— 实测进入 live 后 room-dialog 仍然覆盖全屏：
+  //   - 画面中心 elementFromPoint 命中 .room-code-display 而不是 canvas，
+  //     鼠标按住 700ms 一发子弹都打不出去（键盘能动，因为 InputController
+  //     把 room-dialog 列入 IGNORED_DIALOGS，但鼠标点击被 DOM 遮罩吃掉）；
+  //   - 弹窗里还挂着「开始战斗 / 离开房间」，误触 × 直接 leaveMatch() 退赛。
+  // 现在按 phase 与 app.mode 双重把关：只要已进入对局，就不再显示房间弹窗。
+  const inMatch = app?.mode === 'match';
+  const phase = String(lobby.phase || '');
+  if (inMatch || phase === 'loading' || phase === 'live' || phase === 'playing' || phase === 'ended') {
+    const existing = document.getElementById('room-dialog');
+    if (existing && existing.classList.contains('open')) hideRoom();
+    return;
+  }
   let node = document.getElementById('room-dialog');
   if (!node || !node.classList.contains('open')) {
     showRoom(lobby);
@@ -2286,8 +2941,214 @@ export function updateLobby(lobby) {
   }
   const ready = document.getElementById('btn-ready-room');
   if (ready) ready.style.display = lobby.host === app?.selfId ? 'none' : '';
+  // 空降方式按钮：非房主只读（展示当前设置），房主可点击切换。
+  const deployBtn = document.getElementById('btn-deploy-style');
+  if (deployBtn) {
+    const isHost = lobby.host === app?.selfId;
+    const skydive = lobby.deployStyle === 'skydive';
+    deployBtn.disabled = !isHost || lobby.configurable === false;
+    deployBtn.classList.toggle('active', skydive);
+    deployBtn.setAttribute('aria-pressed', skydive ? 'true' : 'false');
+    setText(deployBtn, skydive ? '空降：跳伞' : '空降：直接落地');
+    deployBtn.title = isHost
+      ? '点击切换：跳伞会让开局多约 20 秒，但可以自己选落点'
+      : (skydive ? '房主已设为跳伞开局' : '房主已设为直接落地');
+  }
+  if (isDialogOpen('dropzone-dialog')) refreshDropZone();
 }
 export function hideRoom() { hideDialog('room-dialog'); }
+
+// ── 18.1 · 降落区投票（房间等待阶段的战术地图选点） ─────────────────────────
+// 复用 drawStaticMap 的地形渲染；服务端 lobby.dropVotes 携带全队最新票，
+// 本地选点先以乐观标记呈现，收到下一次 lobby 广播后以服务端票为准。
+const dropZoneState = { mapId: 'qinglan', votes: [], self: null };
+
+function dropzoneMapDef() {
+  const mapId = netState.lastLobby?.mapId || app?.mapId || dropZoneState.mapId;
+  return (data().maps || MAPS)[mapId] || MAPS[mapId] || MAPS.qinglan;
+}
+
+/** 本机玩家的小队编号（lobby.players 缺失时回落 0 队）。 */
+function dropzoneMyTeam() {
+  const players = netState.lastLobby?.players;
+  if (Array.isArray(players)) {
+    const mine = players.find((p) => p.id === app?.selfId);
+    if (mine && Number.isInteger(mine.team)) return mine.team;
+  }
+  return 0;
+}
+
+/** 归一化坐标对应的地点名（优先命中资源区，否则返回 null）。 */
+function dropzoneRegionAt(mapDef, nx, nz) {
+  const radius = mapDef?.radius || 182;
+  const wx = (nx * 2 - 1) * radius;
+  const wz = (nz * 2 - 1) * radius;
+  for (const region of mapDef?.regions || []) {
+    if (Math.hypot(wx - region.x, wz - region.z) <= (region.r || 30)) return region.name;
+  }
+  return null;
+}
+
+export function showDropZone() {
+  const lobby = netState.lastLobby || null;
+  dropZoneState.mapId = lobby?.mapId || app?.mapId || dropZoneState.mapId;
+  const mapDef = dropzoneMapDef();
+  const wrap = h('div', 'dropzone-body');
+  const canvas = document.createElement('canvas');
+  canvas.id = 'dropzone-canvas';
+  canvas.width = 720;
+  canvas.height = 720;
+  canvas.className = 'dropzone-canvas';
+  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('aria-label', `${mapDef.name} 降落区地图，点击或拖动选择小队落点`);
+  const status = h('p', 'dropzone-status muted');
+  status.id = 'dropzone-status';
+  status.setAttribute('role', 'status');
+  const votes = h('div', 'dropzone-votes');
+  votes.id = 'dropzone-votes';
+  wrap.append(canvas, status, votes);
+
+  let dragging = false;
+  const pointToNorm = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const px = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    const py = ((event.clientY - rect.top) / rect.height) * canvas.height;
+    const radius = mapDef.radius || 182;
+    const scale = canvas.width / (radius * 2 + 16);
+    const center = canvas.width / 2;
+    return {
+      x: Math.min(1, Math.max(0, ((px - center) / scale) / (2 * radius) + 0.5)),
+      z: Math.min(1, Math.max(0, ((py - center) / scale) / (2 * radius) + 0.5)),
+    };
+  };
+  const previewAt = (event) => {
+    const norm = pointToNorm(event);
+    if (!norm) return;
+    dropZoneState.self = norm;
+    renderDropZone();
+  };
+  canvas.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    try { canvas.setPointerCapture(event.pointerId); } catch { /* 忽略 */ }
+    previewAt(event);
+  });
+  canvas.addEventListener('pointermove', (event) => { if (dragging) previewAt(event); });
+  canvas.addEventListener('pointerup', (event) => {
+    if (!dragging) return;
+    dragging = false;
+    previewAt(event);
+    commitDropVote();
+  });
+  canvas.addEventListener('pointercancel', () => { dragging = false; });
+
+  const close = h('button', 'btn btn-ghost', '返回房间');
+  close.type = 'button';
+  close.addEventListener('click', () => { playAudio('ui_click'); hideDialog('dropzone-dialog'); });
+  showModal('dropzone-dialog', {
+    title: '降落区',
+    eyebrow: 'DROP ZONE',
+    hint: '点击或拖动地图为小队选择落点，最新一票即为小队降落区。',
+    body: wrap,
+    actions: [close],
+    wide: true,
+  });
+  refreshDropZone();
+}
+
+/** 以最新 lobby 数据重画投票层（弹层未打开时只静默更新缓存）。 */
+function refreshDropZone() {
+  const lobby = netState.lastLobby;
+  if (!lobby) return;
+  dropZoneState.mapId = lobby.mapId || dropZoneState.mapId;
+  const myTeam = dropzoneMyTeam();
+  const all = Array.isArray(lobby.dropVotes) ? lobby.dropVotes : [];
+  dropZoneState.votes = all.filter((v) => v && v.team === myTeam);
+  if (dropZoneState.self && dropZoneState.votes.some((v) => v.by === app?.selfId)) {
+    dropZoneState.self = null; // 服务端已确认本机投票，乐观标记退位
+  }
+  if (!isDialogOpen('dropzone-dialog')) return;
+  renderDropZone();
+}
+
+function commitDropVote() {
+  const vote = dropZoneState.self;
+  if (!vote) return;
+  let sent = false;
+  try { sent = app?.sendDropVote?.(vote.x, vote.z) === true; } catch { sent = false; }
+  if (!sent) toast('暂未连接服务器，落点未同步', 2400);
+  else playAudio('ui_click');
+  renderDropZone();
+}
+
+/** 重画降落区地图：地形 + 全队投票 ping + 本机乐观标记。 */
+function renderDropZone() {
+  const canvas = document.getElementById('dropzone-canvas');
+  if (!canvas) return;
+  const mapDef = dropzoneMapDef();
+  drawStaticMap(canvas, mapDef);
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    const radius = mapDef?.radius || 182;
+    const scale = canvas.width / (radius * 2 + 16);
+    const center = canvas.width / 2;
+    const pt = (nx, nz) => [
+      center + ((nx * 2 - 1) * radius) * scale,
+      center + ((nz * 2 - 1) * radius) * scale,
+    ];
+    const seen = new Set();
+    const pings = [];
+    for (const vote of dropZoneState.votes) {
+      if (seen.has(vote.by)) continue;
+      seen.add(vote.by);
+      pings.push({ ...vote, mine: vote.by === app?.selfId });
+    }
+    if (dropZoneState.self && !pings.some((p) => p.mine)) {
+      pings.push({ x: dropZoneState.self.x, z: dropZoneState.self.z, name: '你', mine: true, pending: true });
+    }
+    for (const ping of pings) {
+      const [x, y] = pt(ping.x, ping.z);
+      ctx.beginPath();
+      ctx.arc(x, y, 14, 0, Math.PI * 2);
+      ctx.fillStyle = ping.mine ? 'rgba(245,180,69,0.22)' : 'rgba(111,224,200,0.22)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+      ctx.fillStyle = ping.mine ? '#f5b445' : '#6fe0c8';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(5,15,16,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // 两个 ping 重合时把「你」的标签画在点下方，避免与队友标签叠字
+      const overlap = ping.mine && pings.some((q) => q !== ping
+        && Math.abs(q.x - ping.x) < 0.02 && Math.abs(q.z - ping.z) < 0.02);
+      ctx.fillStyle = ping.mine ? 'rgba(245,180,69,0.95)' : 'rgba(234,246,241,0.95)';
+      ctx.font = '600 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(ping.name || '队友').slice(0, 6), x, overlap ? y + 25 : y - 19);
+    }
+    canvas.dataset.pings = String(pings.length);
+  }
+  const status = document.getElementById('dropzone-status');
+  if (status) {
+    const mine = dropZoneState.votes.find((v) => v.by === app?.selfId) || dropZoneState.self;
+    if (!mine) setText(status, '点击或拖动地图，为小队选择降落区');
+    else {
+      const region = dropzoneRegionAt(mapDef, mine.x, mine.z);
+      setText(status, `落点已选 · ${region || `${Math.round(mine.x * 100)} : ${Math.round(mine.z * 100)} 网格`}`);
+    }
+  }
+  const votes = document.getElementById('dropzone-votes');
+  if (votes) {
+    clear(votes);
+    if (!dropZoneState.votes.length) votes.append(h('span', 'chip', '暂无小队落点'));
+    for (const vote of dropZoneState.votes) {
+      const region = dropzoneRegionAt(mapDef, vote.x, vote.z);
+      const label = `${vote.by === app?.selfId ? '你' : (vote.name || '队友')} · ${region || '野区'}`;
+      votes.append(h('span', `chip dropzone-chip${vote.by === app?.selfId ? ' mine' : ''}`, label));
+    }
+  }
+}
 
 /** 关闭 #dialog-root 内所有打开的弹窗（开战/回大厅时调用）。 */
 export function hideAllDialogs(exceptId = '') {
@@ -2299,19 +3160,149 @@ export function hideAllDialogs(exceptId = '') {
   }
 }
 
+// ── 18b · 局内背包（B 键 / 触屏「背包」按钮） ───────────────────────────────
+// 帮助面板一直写着「背包 · 查看携带物资」，但 #backpack-action 与 KeyB 全工程都没有
+// 消费者：按钮点了没反应，B 键只产生一个无人读取的 input.inventory 脉冲。
+// 这里用 showModal 建一个轻量只读面板（武器 / 弹药 / 消耗品 / 投掷物 / 配件），
+// 复用它自带的 role=dialog + 焦点陷阱 + Esc 关闭，不再另造一套弹窗基础设施。
+const INVENTORY_CONSUMABLES = [
+  ['meds', '医疗包'], ['bandages', '绷带'], ['energy', '能量饮料'], ['shields', '护盾电池'],
+];
+const INVENTORY_THROWABLES = [
+  ['grenades', '破片手雷'], ['smokes', '烟雾弹'], ['flashes', '闪光弹'], ['molotovs', '燃烧瓶'],
+];
+
+function inventoryRows(me) {
+  const wrap = h('div', 'inventory-body');
+  const weaponName = (id) => weaponTable()[id]?.name || id || DASH;
+  const attachName = (id) => attachmentTable()[id]?.name || id;
+
+  // 1) 武器与弹药
+  const weapons = h('section', 'inventory-section');
+  weapons.append(h('h3', 'inventory-heading', '武器与弹药'));
+  const slots = Array.isArray(me?.loadout) ? me.loadout : [];
+  if (!slots.some(Boolean)) {
+    weapons.append(h('p', 'muted inventory-empty', '没有携带武器'));
+  } else {
+    slots.forEach((slot, index) => {
+      if (!slot?.type) return;
+      const active = Number(me?.slot) === index;
+      const row = h('div', `inventory-row${active ? ' active' : ''}`);
+      const left = h('div', 'inventory-row-main');
+      left.append(h('b', null, weaponName(slot.type)));
+      left.append(h('small', 'muted', active ? '当前手持' : `槽位 ${index + 1}`));
+      const ammo = h('span', 'inventory-ammo num');
+      const mag = Number(slot.ammo ?? 0);
+      // 备用弹药只在当前武器上可见（me.mags 是全类型池，按 type 取）
+      const type = weaponTable()[slot.type]?.ammo;
+      const reserve = active && type ? Number(me?.reserve ?? me?.mags?.[type] ?? 0) : null;
+      ammo.textContent = reserve == null ? `${mag}` : `${mag} / ${reserve}`;
+      if (mag <= 0) ammo.classList.add('empty');
+      row.append(left, ammo);
+      weapons.append(row);
+    });
+    const mags = me?.mags && typeof me.mags === 'object' ? me.mags : null;
+    if (mags) {
+      const pool = h('div', 'inventory-chips');
+      for (const [type, count] of Object.entries(mags)) {
+        const label = AMMO_TYPES?.[type]?.name || type;
+        pool.append(h('span', 'chip', `${label} ${Math.max(0, Math.round(Number(count) || 0))}`));
+      }
+      if (pool.children.length) weapons.append(pool);
+    }
+  }
+  wrap.append(weapons);
+
+  // 2) 配件（按槽位列出，稀有度带符号冗余，不只靠颜色）
+  const attachSection = h('section', 'inventory-section');
+  attachSection.append(h('h3', 'inventory-heading', '配件'));
+  const attachList = h('div', 'inventory-chips');
+  const table = attachmentTable();
+  slots.forEach((slot, index) => {
+    for (const id of slot?.attachments || []) {
+      const def = table[id] || null;
+      const chip = h('span', 'chip');
+      chip.append(h('span', null, `${index === 0 ? '主' : '副'} · ${attachName(id)}`));
+      if (def?.rarity) chip.append(rarityMarkNode(def.rarity));
+      chip.title = def?.desc || '';
+      attachList.append(chip);
+    }
+  });
+  if (!attachList.children.length) attachList.append(h('p', 'muted inventory-empty', '未装配件'));
+  attachSection.append(attachList);
+  wrap.append(attachSection);
+
+  // 3) 消耗品 / 投掷物（两列并排，窄屏自动堆叠）
+  const supplies = h('div', 'inventory-columns');
+  const makeColumn = (title, defs, cls) => {
+    const section = h('section', 'inventory-section');
+    section.append(h('h3', 'inventory-heading', title));
+    const grid = h('div', `inventory-grid ${cls}`);
+    for (const [key, label] of defs) {
+      const count = Math.max(0, Math.round(Number(me?.[key]) || 0));
+      const cell = h('div', `inventory-cell${count <= 0 ? ' empty' : ''}`);
+      cell.append(h('span', 'inventory-label', label), h('b', 'inventory-count num', count));
+      grid.append(cell);
+    }
+    section.append(grid);
+    return section;
+  };
+  supplies.append(makeColumn('消耗品', INVENTORY_CONSUMABLES, 'consumables'));
+  supplies.append(makeColumn('投掷物', INVENTORY_THROWABLES, 'throwables'));
+  wrap.append(supplies);
+  return wrap;
+}
+
+function renderInventory() {
+  const node = dialogs.get('inventory-dialog') || document.getElementById('inventory-dialog');
+  const body = node?._parts?.body;
+  if (!body) return;
+  const me = app?.me || app?.state?.me || null;
+  clear(body);
+  // 标题带玩家名，读屏与截图都能确认「这是谁的背包」
+  setText(node._parts.title, me?.name ? `${me.name} · 背包` : '背包');
+  body.append(inventoryRows(me));
+}
+
+/** 打开局内背包（只读）。对局外显示空背包提示，不抛错。 */
+export function showInventory() {
+  const node = showModal('inventory-dialog', {
+    title: '背包',
+    eyebrow: 'INVENTORY',
+    body: h('div', 'inventory-body'),
+    actions: [],
+  });
+  const close = h('button', 'btn btn-primary', '关闭');
+  close.type = 'button';
+  close.id = 'btn-inventory-close';
+  close.addEventListener('click', () => { playAudio('ui_click'); hideInventory(); });
+  node._parts.actions.append(close);
+  node._parts.actions.style.display = '';
+  renderInventory();
+  // 焦点落在关闭按钮上：焦点陷阱（ui-screens 全局 Tab 处理）会把它锁在弹窗内
+  requestAnimationFrame(() => close.focus({ preventScroll: true }));
+  return node;
+}
+export function hideInventory() { hideDialog('inventory-dialog'); }
+export function isInventoryOpen() { return isDialogOpen('inventory-dialog'); }
+// ── END 18b ────────────────────────────────────────────────────────────────
+
 // ── 19 · 暂停菜单 ───────────────────────────────────────────────────────────
 function buildPauseDialog() {
   const wrap = h('div', 'pause-body');
-  const note = h('p', 'muted');
+  const note = h('p', 'pause-note');
   note.id = 'pause-note';
-  setText(note, '联机对战会继续进行；离线训练将暂停模拟。');
-  const stats = h('div', 'pause-stats');
+  setText(note, '联机对战会继续进行；离线训练会暂停模拟。');
+  // 统计用紧凑格栅（.pause-stats 在样式里是竖排，会让弹窗超高把按钮挤出可视区）
+  const stats = h('div', 'stat-grid');
   stats.id = 'pause-stats';
-  const actions = h('div', 'pause-actions');
-  const resume = h('button', 'btn btn-primary btn-lg', '继续战斗');
+  // 主操作竖排（.pause-menu），退出放弹窗底部
+  const menu = h('div', 'pause-menu');
+  const resume = h('button', 'btn btn-primary', '继续战斗');
   resume.type = 'button';
   resume.id = 'btn-resume';
   resume.addEventListener('click', () => {
+    playAudio('ui_click');
     hidePause();
     try { app?.resumeFromMenu?.(); } catch (err) { console.warn(err); }
   });
@@ -2319,32 +3310,43 @@ function buildPauseDialog() {
   settings.type = 'button';
   settings.id = 'btn-pause-settings';
   settings.addEventListener('click', () => {
+    playAudio('ui_click');
+    // 记录来源：设置页的返回按钮据此回到暂停菜单而不是大厅。
+    // 不记录会卡进「幽灵对局」——主菜单叠在仍在运行的对局上，且无法回到战斗。
+    // 同时保留 app.paused（对局继续冻结），不调用 resumeFromPause。
+    uiState.returnToPause = app?.mode === 'match';
     hidePause();
-    try { app?.pauseForMenu?.(); } catch { /* 忽略 */ }
     openScreen('settings');
   });
   const help = h('button', 'btn btn-ghost', '操作说明');
   help.type = 'button';
   help.id = 'btn-pause-help';
-  help.addEventListener('click', () => showHelpDialog());
+  help.addEventListener('click', () => { playAudio('ui_click'); showHelpDialog(); });
+  menu.append(resume, settings, help);
+  const actions = h('div', 'pause-actions');
   const exit = h('button', 'btn btn-danger', '退出本局');
   exit.type = 'button';
   exit.id = 'btn-exit-match';
   exit.addEventListener('click', () => {
+    playAudio('ui_click');
     hidePause();
     try { app?.leaveMatch?.(); } catch (err) { console.warn(err); }
   });
-  actions.append(resume, settings, help, exit);
-  wrap.append(note, stats, actions);
+  actions.append(exit);
+  wrap.append(note, stats, menu);
+  wrap.actionsEl = actions;
   return wrap;
 }
 
 export function showPause() {
+  const body = buildPauseDialog();
+  const exit = body.actionsEl?.firstElementChild || null;
   const node = showModal('pause-dialog', {
     title: '战斗暂停',
     eyebrow: 'PAUSED',
     hint: '',
-    body: buildPauseDialog(),
+    body,
+    actions: exit ? [exit] : null,
     static: true,
   });
   node.dataset.static = '1';
@@ -2352,6 +3354,19 @@ export function showPause() {
   setTimeout(() => document.getElementById('btn-resume')?.focus({ preventScroll: true }), 60);
 }
 export function hidePause() { hideDialog('pause-dialog'); }
+
+/** 从暂停 UI 的真正“继续”语义：关弹窗 + 恢复模拟（X / Esc / 继续按钮共用）。 */
+function resumeFromPause() {
+  hidePause();
+  try { app?.resumeFromMenu?.(); } catch (err) { console.warn('[ui] resumeFromMenu', err); }
+}
+
+/** 结算弹窗的“离开”语义：关弹窗 + 结束对局回大厅（X / Esc 共用，防止幽灵战场）。 */
+function leaveResultToHome() {
+  hideResult();
+  try { app?.home?.(); } catch (err) { console.warn('[ui] home', err); }
+  try { app?.openScreen ? app.openScreen('home') : openScreen('home'); } catch { openScreen('home'); }
+}
 
 function renderPauseStats() {
   const box = document.getElementById('pause-stats');
@@ -2373,6 +3388,7 @@ function renderPauseStats() {
     box.append(row);
   }
 }
+// 说明：暂停弹窗的统计用 .stat-grid 紧凑两列，避免内容超高把操作按钮挤出弹窗。
 
 // ── 20 · 结算弹窗 ───────────────────────────────────────────────────────────
 function buildResultDialog() {
@@ -2381,8 +3397,7 @@ function buildResultDialog() {
   const rank = h('div', 'rank-display');
   rank.id = 'rank-display';
   rank.textContent = '#1';
-  const rankLabel = h('small', 'muted', '最终排名');
-  rankWrap.append(rank, rankLabel);
+  rankWrap.append(rank, h('small', 'muted', '最终排名'));
   const textWrap = h('div', 'result-headline');
   const eyebrow = h('div', 'eyebrow');
   eyebrow.id = 'result-eyebrow';
@@ -2393,31 +3408,50 @@ function buildResultDialog() {
   textWrap.append(eyebrow, title, subtitle);
   const stats = h('div', 'result-stats');
   stats.id = 'result-stats';
+  const xpPanel = h('div', 'ui-result-xp');
+  xpPanel.id = 'result-xp-panel';
+  const progList = h('div', 'ui-result-list');
+  progList.id = 'result-progress';
+  const rankNote = h('div', 'ui-result-rank-note');
+  rankNote.id = 'result-rank-note';
   const rewards = h('div', 'result-rewards');
   rewards.id = 'result-rewards';
   const tags = h('div', 'result-tags');
   tags.id = 'result-tags';
+  const seasonBox = h('div', 'result-season');
+  seasonBox.id = 'result-season';
+  const masteryBox = h('div', 'result-mastery');
+  masteryBox.id = 'result-mastery';
   const actions = h('div', 'result-actions');
+  const share = h('button', 'btn btn-ghost btn-lg ui-share', '分享战绩');
+  share.type = 'button';
+  share.id = 'btn-share-result';
+  share.addEventListener('click', () => shareResult(share));
   const again = h('button', 'btn btn-primary btn-lg', '再来一局');
   again.type = 'button';
   again.id = 'btn-again';
   again.addEventListener('click', () => {
+    playAudio('ui_click');
     hideResult();
     try {
       if (app?.rematch) app.rematch();
       else startOffline();
-    } catch (err) { toast(err?.message || '无法重新开始'); }
+    } catch (err) {
+      console.warn('[ui] rematch', err);
+      toast(err?.message || '无法重新开始');
+      // 重开失败时不要留在幽灵战场
+      leaveResultToHome();
+    }
   });
   const home = h('button', 'btn btn-ghost btn-lg', '返回大厅');
   home.type = 'button';
   home.id = 'btn-return-home';
   home.addEventListener('click', () => {
-    hideResult();
-    try { app?.home?.(); } catch (err) { console.warn(err); }
-    openScreen('home');
+    playAudio('ui_click');
+    leaveResultToHome();
   });
-  actions.append(again, home);
-  wrap.append(rankWrap, textWrap, stats, rewards, tags, actions);
+  actions.append(share, again, home);
+  wrap.append(rankWrap, textWrap, stats, xpPanel, rankNote, progList, rewards, tags, seasonBox, masteryBox, actions);
   return wrap;
 }
 
@@ -2443,6 +3477,9 @@ export function showResult(summary = {}, rewards = null) {
   setTimeout(() => document.getElementById('btn-again')?.focus({ preventScroll: true }), 80);
 }
 export function hideResult() { hideDialog('result-dialog'); }
+
+/** 结算后离开对局（“返回大厅”按钮 / 关闭 X / Esc 共用同一条安全路径）。 */
+export function leaveResult() { leaveResultToHome(); }
 
 function renderResult() {
   const s = resultSummary || {};
@@ -2511,6 +3548,193 @@ function renderResult() {
     if (!tags.children.length) tags.style.display = 'none';
     else tags.style.display = '';
   }
+  renderResultProgress(r, s);
+  renderResultXp(r, s);
+  renderResultSeason(r);
+  renderResultMastery(r);
+}
+
+/** 结算 · 赛季通行证（本局经验 + 升档）。 */
+function renderResultSeason(r) {
+  const node = document.getElementById('result-season');
+  if (!node) return;
+  clear(node);
+  const s = r?.season;
+  if (!s || !s.gained) { node.style.display = 'none'; return; }
+  node.style.display = '';
+  node.append(h('span', 'badge badge-season', `赛季 +${fmtNum(s.gained)} XP`));
+  if (s.leveledUp) {
+    node.append(h('span', 'badge badge-win', `通行证 ${s.tierBefore} → ${s.tierAfter} 级`));
+    for (const rw of (s.rewards || []).slice(0, 3)) {
+      if (rw?.label) node.append(h('span', 'badge', rw.label));
+    }
+  }
+}
+
+/** 结算 · 武器精通（每把枪本局成长）。 */
+function renderResultMastery(r) {
+  const node = document.getElementById('result-mastery');
+  if (!node) return;
+  clear(node);
+  const list = Array.isArray(r?.mastery) ? r.mastery : [];
+  if (!list.length) { node.style.display = 'none'; return; }
+  node.style.display = '';
+  for (const m of list) {
+    if (!m?.weaponId) continue;
+    const label = m.leveledUp ? `${m.name || m.weaponId} Lv${m.afterLevel}` : (m.name || m.weaponId);
+    const value = m.leveledUp ? `+${fmtNum(m.gained)} ↑` : `+${fmtNum(m.gained)}`;
+    node.append(h('span', m.leveledUp ? 'badge badge-win' : 'badge', `${label} ${value}`));
+  }
+}
+
+/** 结算 · 段位升降提示（+18 / -12，绿升红降）+ 任务/成就逐条打勾。 */
+function renderResultProgress(r, s) {
+  const rankNote = document.getElementById('result-rank-note');
+  if (rankNote) {
+    clear(rankNote);
+    const delta = Number(r.ratingDelta ?? s.ratingDelta ?? 0);
+    const training = (app?.modeId || s.mode) === 'training';
+    const rank = r.rank || rankInfo();
+    const cls = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
+    const pill = h('span', `ui-rank-delta ${cls}`);
+    const arrow = delta > 0 ? '▲' : delta < 0 ? '▼' : '＝';
+    pill.append(h('span', null, `${arrow} ${delta > 0 ? '+' : ''}${fmtNum(delta)} 分`), h('small', 'muted', '段位分'));
+    rankNote.append(pill);
+    const current = Number.isFinite(Number(r.rating)) ? Number(r.rating) : rating();
+    rankNote.append(h('span', 'badge', `${rank?.name || rank?.tier || '青铜'} · ${fmtNum(current)}`));
+    if (r.levelUp) rankNote.append(h('span', 'badge badge-win', `LV.${r.oldLevel ?? '?'} → LV.${r.newLevel ?? '?'}`));
+    if (training) rankNote.append(h('small', 'muted', '训练场不计段位分'));
+    if (!delta && !r.levelUp && !training) rankNote.append(h('small', 'muted', '本局段位分不变'));
+  }
+  const list = document.getElementById('result-progress');
+  if (!list) return;
+  clear(list);
+  const missionDone = r.missionsCompleted || s.missionsCompleted || [];
+  const achDone = r.achievementsCompleted || s.achievementsCompleted || [];
+  if (!missionDone.length && !achDone.length) {
+    list.append(h('small', 'muted', '本局没有新的任务或成就完成 —— 进度已记录，下次结算继续累计。'));
+    return;
+  }
+  let delay = 0;
+  for (const item of missionDone) {
+    const row = h('div', 'ui-check-row');
+    row.style.animationDelay = `${delay}ms`;
+    delay += 70;
+    row.append(h('span', 'ui-check', '✓'), h('b', null, '任务'), h('span', null, item.title || item.id || String(item)));
+    if (item.xp || item.credits) row.append(h('span', 'ui-check-reward', `+${fmtNum(item.xp || 0)} XP · +${fmtNum(item.credits || 0)}`));
+    list.append(row);
+  }
+  for (const item of achDone) {
+    const row = h('div', 'ui-check-row');
+    row.style.animationDelay = `${delay}ms`;
+    delay += 70;
+    row.append(h('span', 'ui-check', '★'), h('b', null, '成就'), h('span', null, item.title || item.id || String(item)));
+    if (item.xp || item.credits) row.append(h('span', 'ui-check-reward', `+${fmtNum(item.xp || 0)} XP · +${fmtNum(item.credits || 0)}`));
+    list.append(row);
+  }
+}
+
+/** 结算 · 经验条动画：旧等级 → 新等级，数字滚动。 */
+function renderResultXp(r, s) {
+  const panel = document.getElementById('result-xp-panel');
+  if (!panel) return;
+  clear(panel);
+  clearTimeout(renderResultXp._timer);
+  const info = xpInfo();
+  const gained = Number(r.xp ?? s.xp ?? 0);
+  const newLevel = Number(r.newLevel ?? info.level ?? 1) || 1;
+  const oldLevel = Number(r.oldLevel ?? (r.levelUp ? Math.max(1, newLevel - 1) : newLevel)) || 1;
+  const needed = Number(info.needed) || 1;
+  const current = Math.max(0, Number(info.current) || 0);
+  const head = h('div', 'ui-result-xp-head');
+  const levelText = h('b');
+  const xpText = h('span', 'muted');
+  head.append(h('span', 'muted', '等级'), levelText, h('span', 'spacer'), xpText);
+  const track = h('div', 'ui-xp-track');
+  track.setAttribute('role', 'progressbar');
+  track.setAttribute('aria-label', '经验进度');
+  track.setAttribute('aria-valuemin', '0');
+  const fill = h('i');
+  fill.id = 'result-xp-fill';
+  if (r.levelUp) fill.classList.add('ui-xp-glow');
+  track.append(fill);
+  panel.append(head, track);
+  const hint = h('small', 'muted');
+  hint.id = 'result-xp-hint';
+  panel.append(hint);
+
+  // 起点：跨级时从 0% 起跑，否则从「当前经验 - 本局经验」估算
+  const startPct = r.levelUp ? 0 : Math.max(0, Math.min(100, ((current - gained) / needed) * 100));
+  const endPct = Math.max(0, Math.min(100, (current / needed) * 100));
+  fill.style.width = `${startPct.toFixed(1)}%`;
+  const reduced = !!app?.settings?.reducedMotion;
+  const duration = reduced ? 0 : 700;
+  const anim = { level: oldLevel, xp: Math.max(0, Math.round(current - gained)), t0: performance.now() };
+  const totalXp = Math.max(1, Math.round(gained));
+  const paint = (now) => {
+    const t = duration <= 0 ? 1 : Math.min(1, (now - anim.t0) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    const xpNow = Math.round(anim.xp + (current - anim.xp) * eased);
+    const levelNow = r.levelUp ? (t < 0.5 ? oldLevel : newLevel) : newLevel;
+    setText(levelText, `LV.${levelNow}`);
+    setText(xpText, `${fmtNum(xpNow)} / ${fmtNum(needed)} EXP`);
+    fill.style.width = `${(startPct + (endPct - startPct) * eased).toFixed(1)}%`;
+    if (t < 1) requestAnimationFrame(paint);
+    else {
+      setText(hint, r.levelUp
+        ? `等级提升！本局获得 ${fmtNum(totalXp)} 经验，继续对局可解锁更多武器。`
+        : `本局获得 ${fmtNum(totalXp)} 经验，距离升级还差 ${fmtNum(Math.max(0, needed - current))} 点。`);
+    }
+  };
+  requestAnimationFrame(paint);
+}
+
+/** 结算分享：navigator.share 可用则调起系统分享，否则复制文本 + toast。 */
+function shareResult(button) {
+  const s = resultSummary || {};
+  const r = resultRewards || {};
+  const placement = Number(s.placement) || 0;
+  const bits = [];
+  bits.push(`【雾岛突围】${s.won ? '成功突围' : '本局战报'}`);
+  if (placement) bits.push(`第 ${placement} 名${s.totalTeams ? ` / ${s.totalTeams} 队` : ''}`);
+  bits.push(`${fmtNum(s.kills || 0)} 淘汰 · ${fmtNum(s.damage || 0)} 伤害 · 生存 ${fmtTime(s.survived || 0)}`);
+  if (s.mapId) bits.push(mapNameOf(s.mapId));
+  if (r.xp) bits.push(`+${fmtNum(r.xp)} 经验`);
+  const text = bits.join(' · ');
+  const url = (() => { try { return location.origin + location.pathname; } catch { return ''; } })();
+  const nav = typeof navigator !== 'undefined' ? navigator : null;
+  if (nav?.share) {
+    try {
+      const result = nav.share({ title: '雾岛突围 · 战报', text, url });
+      if (result && typeof result.then === 'function') {
+        result.then(() => toast('已分享', 1800), () => copyShareText(text, url));
+      }
+      return;
+    } catch { /* 落到复制分支 */ }
+  }
+  copyShareText(text, url);
+}
+
+function copyShareText(text, url) {
+  const payload = url ? `${text}\n${url}` : text;
+  const fallback = () => {
+    try {
+      const area = document.createElement('textarea');
+      area.value = payload;
+      area.setAttribute('readonly', '');
+      area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.append(area);
+      area.select();
+      const ok = document.execCommand?.('copy');
+      area.remove();
+      toast(ok ? '战绩已复制到剪贴板' : payload, ok ? 2000 : 5000);
+    } catch { toast(payload, 5000); }
+  };
+  if (navigator?.clipboard?.writeText) {
+    navigator.clipboard.writeText(payload).then(() => toast('战绩已复制到剪贴板', 2000), fallback);
+    return;
+  }
+  fallback();
 }
 
 // ── 21 · 操作说明 / 教程 ────────────────────────────────────────────────────
@@ -2520,8 +3744,9 @@ const HELP_DESKTOP = [
   ['R', '换弹', '切枪会保留各自弹匣'],
   ['E', '交互', '拾取物资、上下车、救援队友'],
   ['Q', '切换武器', '主武器与副武器互换'],
-  ['G / F', '投掷物', '破片手雷 / 烟雾弹'],
+  ['G / F', '投掷物', 'G 扔当前选中，F 切换下一个'],
   ['H', '使用消耗品', '优先治疗，静止时生效'],
+  ['B', '背包', '查看武器、弹药、消耗品与配件'],
   ['M', '全图', '打开战术地图查看标记'],
   ['Tab', '记分板', '查看本局所有队伍的排名'],
   ['Esc', '菜单', '暂停、设置或退出对局'],
@@ -2531,9 +3756,10 @@ const HELP_TOUCH = [
   ['右摇杆', '瞄准与开火', '推离中心即持续射击'],
   ['换弹 / 治疗', '右侧动作按钮', '拇指可及的圆形按钮'],
   ['交互', '拾取、上车、救援', '靠近目标后按住'],
-  ['投掷 / 切枪', '战术按钮', '长按可切换投掷物'],
+  ['投掷', '战术按钮', '短按扔当前投掷物，长按切换下一个'],
   ['蹲 / 翻滚', '姿态按钮', '翻滚有冷却，可躲子弹'],
-  ['背包', '查看携带物资', '暂停时可整理装备'],
+  ['背包', '查看携带物资', '显示武器、弹药、消耗品与配件'],
+  ['聊天', '发送队伍消息', '动作按钮里的「聊天」，Enter 键也可'],
   ['小地图', '点击放大', '查看安全区、空投与标记'],
 ];
 
@@ -2742,6 +3968,34 @@ function topDialog() {
   const list = [...document.querySelectorAll('#dialog-root .modal.open')];
   return list.length ? list[list.length - 1] : null;
 }
+
+/** 弹窗内可聚焦元素（排除 disabled / hidden）。 */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+  + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function focusablesIn(root) {
+  if (!root) return [];
+  return [...root.querySelectorAll(FOCUSABLE)].filter((el) => {
+    if (el.hasAttribute('hidden')) return false;
+    if (el.closest('.hidden, [aria-hidden="true"]')) return false;
+    return el.offsetParent !== null || el.getClientRects().length > 0;
+  });
+}
+/**
+ * 弹窗焦点陷阱：Tab / Shift+Tab 在弹窗内循环，不允许焦点逃到背景页面。
+ * WCAG 2.4.3（焦点顺序）+ 2.1.1（键盘可达）的基本要求；
+ * 旧实现没有陷阱，弹窗打开后 Tab 会把焦点带到背后的屏幕上。
+ */
+function trapDialogFocus(event, dialogEl) {
+  const list = focusablesIn(dialogEl);
+  if (!list.length) { event.preventDefault(); return; }
+  const first = list[0];
+  const last = list[list.length - 1];
+  const active = document.activeElement;
+  const inside = dialogEl.contains(active);
+  if (!inside) { event.preventDefault(); first.focus(); return; }
+  if (event.shiftKey && active === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
+}
 function onKeyDown(event) {
   if (isTyping(event.target)) {
     if (event.key === 'Escape') { event.target.blur(); }
@@ -2749,28 +4003,47 @@ function onKeyDown(event) {
   }
   const open = topDialog();
   if (event.key === 'Escape') {
+    // Esc 由 ui-screens 独占处理：必须停止传播。
+    //
+    // 旧实现有两处 Esc 监听（main.js 的 document 监听 + 这里的 window 监听），
+    // 两次都会执行：main.js 先 pauseForMenu() 打开暂停窗，随后这里看到
+    // topDialog() === 'pause-dialog'，把同一次按键当成「关闭暂停」执行 resumeFromPause()
+    // —— 结果按 Esc 暂停窗一闪而过，桌面端完全无法用键盘暂停。
+    // 用 stopPropagation 让 window 捕获阶段的 main.js 监听收不到（见 main.js 的注释）。
     if (open) {
       event.preventDefault();
-      if (open.dataset.static === '1') {
-        if (open.id === 'pause-dialog') hidePause();
-        else if (open.id === 'result-dialog') hideResult();
-        else if (open.id === 'room-dialog') hideRoom();
-      } else hideDialog(open.id);
+      event.stopPropagation();
+      // static 弹窗的 Esc 必须走各自的“离开”语义，不能只关 DOM（否则幽灵战场）
+      if (open.id === 'result-dialog') leaveResultToHome();
+      else if (open.id === 'pause-dialog') resumeFromPause();
+      else if (open.id === 'room-dialog') { hideRoom(); try { app?.leaveMatch?.(); } catch { /* 忽略 */ } }
+      else hideDialog(open.id);
       return;
     }
-    if (activeScreen && activeScreen !== 'home') { event.preventDefault(); openScreen('home'); return; }
-    if (app?.mode === 'match' && app?.paused !== undefined) { event.preventDefault(); try { app.pauseForMenu?.(); } catch { /* 忽略 */ } }
+    if (activeScreen && activeScreen !== 'home') { event.preventDefault(); event.stopPropagation(); openScreen('home'); return; }
+    if (app?.mode === 'match' && app?.paused !== undefined) {
+      event.preventDefault(); event.stopPropagation();
+      try { app.pauseForMenu?.(); } catch { /* 忽略 */ }
+    }
     return;
   }
+  // Tab 键**不再**被劫持为「切换屏幕」。
+  //
+  // 旧实现把任何 Tab 都 preventDefault 后 openScreen(下一个)，导致：
+  //   - 键盘用户永远无法用 Tab 到达任何按钮/滑块/输入框（焦点始终停在 BODY）；
+  //   - 弹窗打开时按 Tab，背景屏幕还会被切走；
+  //   - 读屏软件无法按标准方式遍历页面。
+  // 屏幕切换只保留 Esc（返回）与界面上的导航按钮；需要键盘直达时用 Alt+1..7。
   if (event.key === 'Tab' || event.code === 'Tab') {
-    const appMode = app?.mode;
-    if (appMode === 'match') return;
-    event.preventDefault();
-    const order = HOME_NAV.map(item => item.id);
-    const idx = order.indexOf(activeScreen);
-    const dir = event.shiftKey ? -1 : 1;
-    const next = order[(idx + dir + order.length) % order.length] || 'home';
-    openScreen(next);
+    const open = topDialog();
+    if (open) trapDialogFocus(event, open);
+    return;
+  }
+  // Alt+1..7 快速切屏（键盘无障碍替代，且弹窗打开时禁用）
+  if (event.altKey && !topDialog() && /^Digit[1-7]$/.test(event.code || '')) {
+    const idx = Number(event.code.slice(-1)) - 1;
+    const target = HOME_NAV[idx];
+    if (target && app?.mode !== 'match') { event.preventDefault(); openScreen(target.id); }
     return;
   }
   if (event.key === 'm' || event.key === 'M') {
@@ -2834,6 +4107,17 @@ export function initScreens(application) {
   setActiveScreen('home');
   refreshChrome();
   bindGlobal();
+  injectTouchTargets();
+  injectScreenStyles();
+  // ⚠ 这两步此前只在「引导 / 计分板」里被间接调用，正常启动路径完全没执行：
+  //   - injectUiV2Styles()：任务工具条 .ui-mission-tools / 武器对比 .ui-cmp-track /
+  //     图鉴锁定 .ui-locked / .ui-btn 等一批组件在 style.css 里没有任何规则，
+  //     全靠这段内联 CSS。不调用它们就是「裸奔」——实测任务页今日剩余进度条高度 0px，
+  //     一键领取按钮只有 65×21px，装备页对比条完全消失。
+  //   - bindUiV2Globals()：安全区探测、键盘弹出、竖屏暂停（syncOrientation）都在里面，
+  //     不调用则 --safe-* 永不刷新、竖屏时主循环仍在空跑。
+  try { injectUiV2Styles(); } catch (err) { console.warn('[ui] V2 样式注入失败', err); }
+  try { bindUiV2Globals(); } catch (err) { console.warn('[ui] V2 全局绑定失败', err); }
   recentMatches.length = 0;
   const saved = saveData();
   if (Array.isArray(saved.recentMatches)) recentMatches.push(...saved.recentMatches.slice(0, 8));
@@ -2885,10 +4169,10 @@ export function confirmAction(options) { confirmDialog(options); }
 export function closeTopDialog() {
   const node = topDialog();
   if (!node) return false;
-  if (node.id === 'pause-dialog') hidePause();
-  else if (node.id === 'result-dialog') hideResult();
-  else if (node.id === 'room-dialog') hideRoom();
-  else if (node.id === 'map-dialog') hideDialog('map-dialog');
+  // static 弹窗必须走“离开”语义，避免只关 DOM 留下幽灵战场
+  if (node.id === 'result-dialog') leaveResultToHome();
+  else if (node.id === 'pause-dialog') resumeFromPause();
+  else if (node.id === 'room-dialog') { hideRoom(); try { app?.leaveMatch?.(); } catch { /* 忽略 */ } }
   else hideDialog(node.id);
   return true;
 }
@@ -2902,4 +4186,680 @@ export function getNickname() {
 
 /** 设置某个屏幕为当前屏幕（供 main.js 在启动时调用）。 */
 export function showHome() { openScreen('home'); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 25 · V2 增强层（引导 / 计分板 / 结算动画 / 装备对比 / 图鉴 / 任务 / 虚拟化）
+// 说明：本节只追加新函数，所有 DOM 使用 ui- 前缀，样式全部由 JS 注入（不改 style.css）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** V2 组件样式（一次性注入；design 收编后同名类可被 style.css 覆盖）。 */
+function injectUiV2Styles() {
+  if (document.getElementById('ui-v2-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'ui-v2-styles';
+  style.textContent = [
+    /* ── 通用命中区 + 按压反馈（触屏 ≥44px，桌面保持紧凑） ───────────── */
+    '.ui-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 16px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);background:rgba(9,28,29,.86);color:var(--text-hi);font-size:13px;font-weight:600;letter-spacing:.02em;cursor:pointer;transition:transform .12s ease,border-color .18s ease,background-color .18s ease}',
+    '.ui-btn:hover:not(:disabled){border-color:var(--line-accent);background:rgba(20,60,56,.9)}',
+    '.ui-btn:active:not(:disabled){transform:scale(.97)}',
+    '.ui-btn:disabled{opacity:.5;cursor:not-allowed}',
+    '.ui-btn.ui-primary{border-color:rgba(111,224,200,.55);background:linear-gradient(180deg,rgba(111,224,200,.22),rgba(111,224,200,.08));color:#eafff8}',
+    '.ui-btn.ui-ghost{background:rgba(6,20,21,.7)}',
+    '.ui-btn.ui-sm{min-height:44px;padding:0 12px;font-size:12px}',
+    '.ui-icon-btn{display:inline-grid;place-items:center;width:44px;height:44px;min-width:44px;min-height:44px;border:1px solid var(--line);border-radius:var(--radius-sm);background:rgba(9,28,29,.8);color:var(--text-mid);cursor:pointer;transition:transform .12s ease,border-color .18s ease}',
+    '.ui-icon-btn:hover{border-color:var(--line-accent);color:var(--text-hi)}',
+    '.ui-icon-btn:active{transform:scale(.94)}',
+    '.ui-busy-spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.28);border-top-color:var(--c-teal-300,#6fe0c8);border-radius:50%;animation:uiSpin .8s linear infinite}',
+    '@keyframes uiSpin{to{transform:rotate(360deg)}}',
+    /* ── 首次启动引导（浮层，不拦截主菜单点击） ─────────────────────── */
+    '.ui-onboarding{position:fixed;inset:0;z-index:calc(var(--z-modal,70) + 2);pointer-events:none;display:flex;align-items:flex-end;padding:0 0 calc(var(--safe-b,0px) + 18px) calc(var(--safe-l,0px) + 18px)}',
+    '.ui-onboarding.hidden{display:none}',
+    '.ui-onb-card{pointer-events:auto;position:relative;width:min(430px,calc(100vw - 36px));padding:16px 18px 14px;border:1px solid var(--line-strong);border-radius:var(--radius-md);background:linear-gradient(180deg,rgba(18,44,44,.97),rgba(6,20,21,.97));box-shadow:0 24px 70px -40px #000,0 0 0 1px rgba(111,224,200,.12);animation:uiOnbIn .34s cubic-bezier(.2,.9,.3,1.1)}',
+    '@keyframes uiOnbIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}',
+    '.ui-onb-eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--c-teal-300,#6fe0c8);opacity:.85}',
+    '.ui-onb-title{margin:4px 0 2px;font-size:16px;font-weight:800;color:var(--text-hi)}',
+    '.ui-onb-text{margin:0;font-size:12px;line-height:1.55;color:var(--text-mid)}',
+    '.ui-onb-dots{display:flex;gap:6px;margin:10px 0 0}',
+    '.ui-onb-dot{width:20px;height:4px;border-radius:2px;background:rgba(151,214,199,.2)}',
+    '.ui-onb-dot.on{background:var(--c-teal-300,#6fe0c8)}',
+    '.ui-onb-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}',
+    '.ui-onb-modes{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}',
+    '.ui-onb-mode{min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:rgba(8,24,25,.9);color:var(--text-mid);font-size:12px;cursor:pointer}',
+    '.ui-onb-mode.on{border-color:rgba(111,224,200,.6);color:var(--text-hi);background:rgba(111,224,200,.14)}',
+    '.ui-onb-mode:active{transform:scale(.97)}',
+    '.ui-onb-keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:10px}',
+    '.ui-onb-key{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-mid)}',
+    '.ui-onb-key b{display:inline-grid;place-items:center;min-width:36px;height:22px;padding:0 6px;border:1px solid var(--line);border-radius:4px;background:rgba(255,255,255,.04);color:var(--text-hi);font-size:10px}',
+    /* ── 虚拟列表 ──────────────────────────────────────────────────── */
+    '.ui-virt{display:block!important;grid-template-columns:none!important}',
+    '.ui-virt-spacer{display:block;width:100%;pointer-events:none}',
+    '.ui-virt-rows{display:flex;flex-direction:column;gap:var(--sp-3)}',
+    '.ui-virt-row{display:flex;gap:var(--sp-3);align-items:stretch}',
+    '.ui-virt-row > *{flex:1 1 0;min-width:0}',
+    /* ── 商店 / 图鉴空态 ───────────────────────────────────────────── */
+    '.ui-empty{padding:22px 18px;text-align:center;border:1px dashed rgba(151,214,199,.22);border-radius:var(--radius-md);background:rgba(6,20,21,.45);color:var(--text-lo)}',
+    '.ui-empty b{display:block;margin-bottom:6px;color:var(--text-hi);font-size:14px}',
+    /* ── 任务页工具条 ──────────────────────────────────────────────── */
+    '.ui-mission-tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:rgba(6,20,21,.6)}',
+    '.ui-daybar{position:relative;flex:1 1 180px;min-width:120px;height:6px;border-radius:3px;background:rgba(151,214,199,.14);overflow:hidden}',
+    '.ui-daybar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,rgba(111,224,200,.55),rgba(111,224,200,.95));transition:width .4s ease}',
+    '.ui-mission-count{flex:0 0 auto;font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums}',
+    '.mission .ui-mission-progress{font-size:11px;color:var(--text-lo);font-variant-numeric:tabular-nums}',
+    '.mission.claimable{box-shadow:inset 2px 0 0 rgba(111,224,200,.75)}',
+    '.mission.done{opacity:.62}',
+    '.mission.done .ui-mission-progress{color:var(--c-teal-300,#6fe0c8)}',
+    /* ── 武器对比 ──────────────────────────────────────────────────── */
+    '.ui-cmp{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid rgba(111,224,200,.28);border-radius:var(--radius-sm);background:rgba(9,30,31,.78)}',
+    '.ui-cmp-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;font-size:11px;color:var(--text-dim)}',
+    '.ui-cmp-head b{font-size:13px;color:var(--text-hi)}',
+    '.ui-cmp-head .ui-cmp-arrow{color:var(--c-teal-300,#6fe0c8)}',
+    '.ui-cmp-row{display:grid;grid-template-columns:52px 1fr 62px;align-items:center;gap:8px}',
+    '.ui-cmp-label{font-size:11px;color:var(--text-lo)}',
+    '.ui-cmp-track{position:relative;height:6px;border-radius:3px;background:rgba(151,214,199,.12);overflow:hidden}',
+    '.ui-cmp-track i{position:absolute;inset:0 auto 0 0;border-radius:3px;background:rgba(151,214,199,.5)}',
+    '.ui-cmp-track i.up{background:linear-gradient(90deg,#4fd6a6,#8ef0c4)}',
+    '.ui-cmp-track i.down{background:linear-gradient(90deg,#e0604f,#ff9a5c)}',
+    '.ui-cmp-val{text-align:right;font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-mid)}',
+    '.ui-cmp-delta{font-weight:700}',
+    '.ui-cmp-delta.up{color:#6fe0a8}',
+    '.ui-cmp-delta.down{color:#ff8f7a}',
+    '.ui-cmp-delta.same{color:var(--text-dim)}',
+    /* ── 图鉴 ──────────────────────────────────────────────────────── */
+    '.codex-card.ui-locked{opacity:.55;filter:saturate(.35)}',
+    '.codex-card.ui-locked:hover{opacity:.75}',
+    '.ui-lock-tag{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#ffb08a}',
+    '.ui-codex-detail-head{display:flex;gap:12px;align-items:flex-start}',
+    '.ui-codex-lock-note{margin-top:8px;padding:8px 10px;border:1px dashed rgba(255,150,90,.4);border-radius:var(--radius-sm);color:#ffbf9b;font-size:12px;background:rgba(60,24,12,.35)}',
+    '.ui-codex-cond{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}',
+    '.codex-tabs.ui-tabs-wrap{flex-wrap:wrap;overflow:visible}',
+    /* ── 结算增强 ──────────────────────────────────────────────────── */
+    '.ui-result-xp{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:rgba(6,20,21,.55)}',
+    '.ui-result-xp-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:11px;color:var(--text-dim)}',
+    '.ui-result-xp-head b{font-size:15px;color:var(--text-hi);font-variant-numeric:tabular-nums}',
+    '.ui-xp-track{position:relative;height:8px;border-radius:4px;background:rgba(151,214,199,.14);overflow:hidden}',
+    '.ui-xp-track i{position:absolute;inset:0 auto 0 0;border-radius:4px;background:linear-gradient(90deg,rgba(111,224,200,.6),#9ff3dc);transition:width .1s linear}',
+    '.ui-xp-track .ui-xp-glow{background:linear-gradient(90deg,rgba(245,180,69,.85),#ffe6a8)}',
+    '.ui-result-list{display:flex;flex-direction:column;gap:6px}',
+    '.ui-check-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid rgba(111,224,200,.2);border-radius:var(--radius-sm);background:rgba(9,30,31,.6);font-size:12px;color:var(--text-mid);animation:uiCheckIn .28s ease both}',
+    '@keyframes uiCheckIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}',
+    '.ui-check-row .ui-check{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;background:rgba(111,224,200,.18);color:#8ef0c4;font-size:10px;flex:0 0 auto}',
+    '.ui-check-row b{color:var(--text-hi);font-weight:600}',
+    '.ui-check-row .ui-check-reward{margin-left:auto;color:var(--text-dim);font-size:11px;white-space:nowrap}',
+    '.ui-rank-delta{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}',
+    '.ui-rank-delta.up{color:#8ef0c4;background:rgba(111,224,200,.14)}',
+    '.ui-rank-delta.down{color:#ff9a5c;background:rgba(255,120,90,.14)}',
+    '.ui-rank-delta.flat{color:var(--text-dim);background:rgba(151,214,199,.1)}',
+    '.ui-share{min-height:44px}',
+    /* ── 计分板 ────────────────────────────────────────────────────── */
+    '#ui-scoreboard .modal-card{width:min(1080px,96vw);max-height:94vh}',
+    '.ui-scoreboard{display:flex;flex-direction:column;gap:10px}',
+    '.ui-scoreboard-summary{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--text-mid)}',
+    '.ui-scoreboard-summary b{color:var(--text-hi);font-variant-numeric:tabular-nums}',
+    '.ui-sb-table{display:flex;flex-direction:column;gap:2px;min-height:0}',
+    '.ui-sb-row{display:grid;grid-template-columns:44px minmax(0,1fr) 56px 64px 74px;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--radius-sm);font-size:12px;color:var(--text-mid);background:rgba(255,255,255,.02)}',
+    '.ui-sb-row.head{background:transparent;color:var(--text-dim);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding-block:4px}',
+    '.ui-sb-row.mine{border:1px solid rgba(111,224,200,.45);background:rgba(111,224,200,.1);color:var(--text-hi)}',
+    '.ui-sb-row.dead{opacity:.5}',
+    '.ui-sb-row .ui-sb-rank{font-variant-numeric:tabular-nums;color:var(--text-dim)}',
+    '.ui-sb-row.mine .ui-sb-rank{color:var(--c-teal-300,#6fe0c8)}',
+    '.ui-sb-team{display:flex;align-items:center;gap:8px;min-width:0}',
+    '.ui-sb-team b{color:var(--text-hi);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.ui-sb-dot{width:6px;height:6px;border-radius:50%;background:#8ef0c4;flex:0 0 auto}',
+    '.ui-sb-row.dead .ui-sb-dot{background:#5a6a68}',
+    '.ui-sb-num{text-align:right;font-variant-numeric:tabular-nums}',
+    '.ui-sb-foot{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:11px;color:var(--text-dim)}',
+    /* ── 响应式收敛 ────────────────────────────────────────────────── */
+    '@media (max-height:460px){',
+    '  .ui-onb-card{width:min(360px,calc(100vw - 28px));padding:12px 14px 10px}',
+    '  .ui-onb-title{font-size:14px}',
+    '  .ui-onb-text{font-size:11px;line-height:1.45}',
+    '  .ui-onb-keys{display:none}',
+    '  .ui-sb-row{grid-template-columns:36px minmax(0,1fr) 44px 52px 62px;padding:6px 8px;font-size:11px}',
+    '}',
+    '@media (prefers-reduced-motion:reduce){',
+    '  .ui-onb-card,.ui-check-row{animation:none!important}',
+    '  .ui-btn:active,.ui-icon-btn:active,.ui-onb-mode:active{transform:none}',
+    '}',
+  ].join('\n');
+  document.head.append(style);
+}
+
+/** 安全区：只在 JS 里写入 CSS 变量（style.css 由 design 维护，不改）。 */
+function applySafeArea() {
+  try {
+    const probe = document.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;'
+      + 'padding-top:env(safe-area-inset-top,0px);padding-right:env(safe-area-inset-right,0px);'
+      + 'padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-inset-left,0px);';
+    document.body.append(probe);
+    const cs = getComputedStyle(probe);
+    const root = document.documentElement;
+    for (const [side, value] of [
+      ['t', cs.paddingTop], ['r', cs.paddingRight], ['b', cs.paddingBottom], ['l', cs.paddingLeft],
+    ]) {
+      const px = Math.max(0, Math.round(Number.parseFloat(value) || 0));
+      root.style.setProperty(`--safe-${side}`, `${px}px`);
+    }
+    probe.remove();
+  } catch { /* 不支持 env() 时沿用样式表默认值 */ }
+}
+
+/** 竖屏：显示 #rotate-hint 并暂停主循环（app.suspended）。 */
+function syncOrientation() {
+  let portrait = false;
+  try { portrait = matchMedia('(orientation: portrait)').matches; } catch { portrait = false; }
+  const hint = document.getElementById('rotate-hint');
+  if (hint) hint.dataset.uiPortrait = portrait ? '1' : '0';
+  if (!app) return;
+  if (portrait) {
+    if (app.suspended !== true) app.suspended = true;
+    app.uiPortrait = true;
+  } else if (app.uiPortrait) {
+    app.uiPortrait = false;
+    if (!document.hidden) app.suspended = false;
+    app.frameAt = performance.now();
+  }
+}
+
+let uiV2Bound = false;
+function bindUiV2Globals() {
+  if (uiV2Bound) return;
+  uiV2Bound = true;
+  applySafeArea();
+  syncOrientation();
+  const onResize = () => { applySafeArea(); syncOrientation(); };
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', () => setTimeout(onResize, 120));
+  try { matchMedia('(orientation: portrait)').addEventListener?.('change', onResize); } catch { /* 老浏览器忽略 */ }
+  // 局内 HUD 的 Tab / 按钮通过自定义事件请求全屏计分板（ui-hud 不 import 本模块）
+  window.addEventListener('mist:scoreboard', () => toggleScoreboard());
+}
+// ── END 25a · 样式 / 安全区 / 方向 ──────────────────────────────────────────
+
+// ── 25b · 虚拟列表（只渲染可视区 + 上下各 3 行缓冲） ────────────────────────
+/**
+ * 把一串条目按「行」虚拟化渲染进容器（容器必须是唯一滚动容器 `.screen-body`
+ * 的后代，或自身 overflow:auto）。每行渲染 cols 个等宽卡片。
+ * @param {object} options
+ * @param {HTMLElement} options.host 目标容器（会被清空并接管）
+ * @param {Array} options.items 全部条目数据
+ * @param {(item, index) => HTMLElement} options.render 单卡片渲染函数
+ * @param {number} [options.rowHeight] 行高（含 gap，px）
+ * @param {number} [options.cols] 每行列数（按容器宽度自动推断，可覆盖）
+ * @param {number} [options.buffer] 上下缓冲行数（默认 3）
+ * @param {string} [options.emptyHtml] 空态文案（无条目时显示）
+ */
+function mountVirtualList({ host, items, render, rowHeight = 96, cols = null, buffer = 3, empty = null }) {
+  if (!host) return null;
+  clear(host);
+  const list = Array.isArray(items) ? items : [];
+  host.classList.add('ui-virt');
+  if (!list.length) {
+    host.append(empty || emptyState('这里暂时没有内容。'));
+    return null;
+  }
+  const spacer = h('div', 'ui-virt-spacer');
+  spacer.style.height = '0px';
+  const rows = h('div', 'ui-virt-rows');
+  host.append(spacer, rows);
+  const state = { cols: cols || 1, rowH: rowHeight, buffer, first: -1, last: -1, raf: 0 };
+  const hostRect = () => host.getBoundingClientRect();
+  const scroller = () => {
+    // 找到真正的滚动容器（.screen-body / .modal-body），否则退回 host 自身
+    let node = host.parentElement;
+    while (node && node !== document.body) {
+      const cs = getComputedStyle(node);
+      if (/(auto|scroll)/.test(cs.overflowY) && node.scrollHeight > node.clientHeight + 4) return node;
+      node = node.parentElement;
+    }
+    return host.closest('.modal-body') || host;
+  };
+  const measureCols = () => {
+    if (cols) return cols;
+    const width = host.clientWidth || hostRect().width || 320;
+    return Math.max(1, Math.floor(width / 208));
+  };
+  const paint = () => {
+    state.raf = 0;
+    const box = scroller();
+    const rect = hostRect();
+    const scrollTop = box === host ? host.scrollTop : Math.max(0, box.getBoundingClientRect().top - rect.top);
+    const viewH = box === host ? host.clientHeight : box.clientHeight;
+    const total = Math.ceil(list.length / state.cols);
+    const firstVisible = Math.max(0, Math.floor(scrollTop / state.rowH));
+    const first = Math.max(0, firstVisible - state.buffer);
+    const last = Math.min(total - 1, firstVisible + Math.ceil(viewH / state.rowH) + state.buffer);
+    spacer.style.height = `${(first * state.rowH).toFixed(0)}px`;
+    const tail = host.querySelector('.ui-virt-tail');
+    if (tail) tail.style.height = `${Math.max(0, (total - last - 1) * state.rowH).toFixed(0)}px`;
+    if (first === state.first && last === state.last && rows.childElementCount) return;
+    state.first = first;
+    state.last = last;
+    clear(rows);
+    for (let row = first; row <= last; row++) {
+      const rowEl = h('div', 'ui-virt-row');
+      rowEl.style.minHeight = `${Math.max(44, state.rowH - 12)}px`;
+      for (let c = 0; c < state.cols; c++) {
+        const index = row * state.cols + c;
+        if (index >= list.length) break;
+        const cell = h('div', 'ui-virt-cell');
+        cell.style.minWidth = '0';
+        cell.append(render(list[index], index));
+        rowEl.append(cell);
+      }
+      if (rowEl.childElementCount) rows.append(rowEl);
+    }
+  };
+  const schedule = () => { if (!state.raf) state.raf = requestAnimationFrame(paint); };
+  const tail = h('div', 'ui-virt-spacer ui-virt-tail');
+  tail.style.height = '0px';
+  host.append(tail);
+  // 监听最近的滚动容器；没有滚动容器（内容未溢出）时也能渲染首屏
+  const box = scroller();
+  box.addEventListener('scroll', schedule, { passive: true });
+  const onResize = () => {
+    const next = measureCols();
+    if (next !== state.cols) { state.cols = next; state.first = -1; state.last = -1; }
+    schedule();
+  };
+  window.addEventListener('resize', onResize);
+  state.cols = measureCols();
+  // 首帧前不要测量（可能还在 display:none 的屏幕里）
+  requestAnimationFrame(() => { state.first = -1; state.last = -1; paint(); });
+  return {
+    refresh: () => { state.first = -1; state.last = -1; schedule(); },
+    destroy: () => {
+      box.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', onResize);
+    },
+    get rendered() { return rows.childElementCount; },
+    get total() { return list.length; },
+  };
+}
+
+// ── 25c · loading / 空态 / 异步超时兜底 ─────────────────────────────────────
+const pendingActions = new WeakMap();
+/**
+ * 异步按钮包装：立即进入 loading（禁用 + 文案「处理中…」），
+ * 8 秒兜底恢复可点并 toast 报错，避免网络异常导致按钮永久卡死。
+ */
+function withBusy(button, task, { label = '处理中…', timeoutMs = 8000, timeoutMessage = '操作超时，请重试' } = {}) {
+  if (!button || pendingActions.has(button)) return null;
+  const original = button.textContent || '';
+  const wasDisabled = button.disabled;
+  button.disabled = true;
+  button.dataset.busy = '1';
+  clear(button);
+  const spinner = h('i', 'ui-busy-spinner');
+  spinner.setAttribute('aria-hidden', 'true');
+  button.append(spinner, h('span', null, label));
+  const done = (ok, message) => {
+    if (!pendingActions.has(button)) return;
+    clearTimeout(pendingActions.get(button));
+    pendingActions.delete(button);
+    delete button.dataset.busy;
+    clear(button);
+    setText(button, original || '确定');
+    button.disabled = wasDisabled;
+    if (!ok && message) toast(message, 2600);
+  };
+  const timer = setTimeout(() => {
+    done(false, timeoutMessage);
+  }, Math.max(500, timeoutMs));
+  pendingActions.set(button, timer);
+  try {
+    const result = typeof task === 'function' ? task() : task;
+    if (result && typeof result.then === 'function') {
+      result.then(() => done(true), err => done(false, err?.message || '操作失败，请重试'));
+    } else {
+      setTimeout(() => done(true), 90);
+    }
+  } catch (err) {
+    done(false, err?.message || '操作失败，请重试');
+  }
+  return timer;
+}
+
+/** 富空态：标题 + 说明 + 可选操作按钮。 */
+function emptyPanel(title, text, action = null) {
+  const box = h('div', 'ui-empty');
+  box.append(h('b', null, title));
+  if (text) box.append(h('p', 'muted', text));
+  if (action && action.label && action.onClick) {
+    const btn = h('button', 'ui-btn ui-sm', action.label);
+    btn.type = 'button';
+    if (action.id) btn.id = action.id;
+    btn.addEventListener('click', () => { playAudio('ui_click'); action.onClick(); });
+    box.append(btn);
+  }
+  return box;
+}
+// ── END 25c ─────────────────────────────────────────────────────────────────
+
+// ── 25d · 首次启动引导（3 步浮层） ──────────────────────────────────────────
+const onboarding = { el: null, step: 0, mode: 'training', shown: false, opener: null };
+
+function tutorialDone() {
+  try { if (meta()?.data?.tutorialDone === true) return true; } catch { /* 忽略 */ }
+  try { if (app?.settings?.tutorialDone === true) return true; } catch { /* 忽略 */ }
+  return false;
+}
+function markTutorialDone() {
+  try {
+    if (meta()?.data) { meta().data.tutorialDone = true; meta().save?.(); }
+  } catch { /* 存档不可写 */ }
+  try {
+    if (app?.settings) { app.settings.tutorialDone = true; app.saveSettings?.(); }
+  } catch { /* 忽略 */ }
+}
+
+const ONB_STEPS = [
+  { eyebrow: 'STEP 1 / 3', title: '先活下去，再谈胜利', text: '' },
+  { eyebrow: 'STEP 2 / 3', title: '选一个战场', text: '模式决定节奏，地图决定地形。第一次建议先打训练场。' },
+  { eyebrow: 'STEP 3 / 3', title: '准备出发', text: '确认选择后会直接进入战场，随时可从菜单返回。' },
+];
+
+const ONB_DESKTOP_KEYS = [['WASD', '移动'], ['鼠标', '瞄准 / 射击'], ['R', '换弹'], ['E', '交互'], ['Tab', '记分板'], ['Esc', '菜单']];
+const ONB_TOUCH_KEYS = [['左摇杆', '移动'], ['右摇杆', '瞄准 / 开火'], ['动作键', '换弹 / 治疗'], ['小地图', '点击放大']];
+
+function onboardingStepBody(step) {
+  const box = h('div', 'ui-onb-step');
+  if (step === 0) {
+    const keys = touchDevice ? ONB_TOUCH_KEYS : ONB_DESKTOP_KEYS;
+    const grid = h('div', 'ui-onb-keys');
+    for (const [key, label] of keys) {
+      const row = h('div', 'ui-onb-key');
+      row.append(h('b', null, key), h('span', null, label));
+      grid.append(row);
+    }
+    box.append(grid);
+  } else if (step === 1) {
+    const modes = h('div', 'ui-onb-modes');
+    modes.setAttribute('role', 'group');
+    modes.setAttribute('aria-label', '选择模式');
+    for (const mode of MODE_LIST) {
+      const btn = h('button', `ui-onb-mode${onboarding.mode === mode.id ? ' on' : ''}`.trim(), mode.name);
+      btn.type = 'button';
+      btn.dataset.onbMode = mode.id;
+      btn.setAttribute('aria-pressed', onboarding.mode === mode.id ? 'true' : 'false');
+      btn.addEventListener('click', () => {
+        onboarding.mode = mode.id;
+        uiState.mode = mode.id;
+        for (const item of modes.children) {
+          const on = item.dataset.onbMode === mode.id;
+          item.classList.toggle('on', on);
+          item.setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+        playAudio('ui_click');
+        const text = $('.ui-onb-text', onboarding.el);
+        if (text) setText(text, `${mode.desc} ${mode.meta}`);
+      });
+      modes.append(btn);
+    }
+    box.append(modes);
+  } else {
+    const summary = h('div', 'ui-onb-modes');
+    const mode = MODE_LIST.find(m => m.id === onboarding.mode) || MODE_LIST[3];
+    const map = mapList().find(m => m.id === uiState.mapId) || mapList()[0];
+    const difficulty = mode.id === 'training' ? 'recruit' : uiState.difficulty;
+    summary.append(h('span', 'chip', mode?.name || '训练场'), h('span', 'chip', map?.name || '青岚岛'),
+      h('span', 'chip', `AI · ${DIFFICULTY[difficulty]?.name || '新兵'}`));
+    box.append(summary);
+  }
+  return box;
+}
+
+function renderOnboarding() {
+  const el = onboarding.el;
+  if (!el) return;
+  const step = onboarding.step;
+  const meta0 = ONB_STEPS[step] || ONB_STEPS[0];
+  setText($('.ui-onb-eyebrow', el), meta0.eyebrow);
+  setText($('.ui-onb-title', el), meta0.title);
+  const text = $('.ui-onb-text', el);
+  if (text) {
+    const modeText = step === 0
+      ? (touchDevice ? '左侧摇杆移动，右侧摇杆推开即瞄准并持续开火。' : 'WASD 移动，鼠标瞄准，左键开火；R 换弹，E 交互。')
+      : meta0.text;
+    setText(text, modeText);
+  }
+  const dots = $('.ui-onb-dots', el);
+  if (dots) {
+    clear(dots);
+    for (let i = 0; i < 3; i++) dots.append(h('i', `ui-onb-dot${i === step ? ' on' : ''}`));
+  }
+  const holder = $('.ui-onb-body', el);
+  if (holder) { clear(holder); holder.append(onboardingStepBody(step)); }
+  const next = $('.ui-onb-next', el);
+  if (next) {
+    const selectedMode = MODE_LIST.find(m => m.id === onboarding.mode) || MODE_LIST[3];
+    setText(next, step >= 2 ? (selectedMode.id === 'training' ? '开始训练' : `开始 · ${selectedMode.name}`) : '下一步');
+  }
+  const skip = $('.ui-onb-skip', el);
+  if (skip) setText(skip, step >= 2 ? '稍后再说' : '跳过引导');
+}
+
+function closeOnboarding({ persist = false } = {}) {
+  const el = onboarding.el;
+  if (!el) return;
+  el.classList.add('hidden');
+  onboarding.shown = false;
+  if (persist) markTutorialDone();
+  const opener = onboarding.opener;
+  onboarding.opener = null;
+  if (opener && typeof opener.focus === 'function' && document.contains(opener)) {
+    try { opener.focus({ preventScroll: true }); } catch { /* 忽略 */ }
+  }
+}
+
+function buildOnboarding() {
+  if (onboarding.el) return onboarding.el;
+  const el = h('div', 'ui-onboarding hidden');
+  el.id = 'ui-onboarding';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'false');
+  el.setAttribute('aria-label', '新手引导');
+  const card = h('section', 'ui-onb-card');
+  const eyebrow = h('div', 'ui-onb-eyebrow', 'STEP 1 / 3');
+  const title = h('div', 'ui-onb-title', '');
+  const text = h('p', 'ui-onb-text', '');
+  const body = h('div', 'ui-onb-body');
+  const dots = h('div', 'ui-onb-dots');
+  const actions = h('div', 'ui-onb-actions');
+  const skip = h('button', 'ui-btn ui-ghost ui-sm ui-onb-skip', '跳过引导');
+  skip.type = 'button';
+  skip.id = 'btn-onb-skip';
+  skip.addEventListener('click', () => { playAudio('ui_click'); closeOnboarding({ persist: true }); toast('可以在「设置 · 引导」里重新打开', 2400); });
+  const next = h('button', 'ui-btn ui-primary ui-sm ui-onb-next', '下一步');
+  next.type = 'button';
+  next.id = 'btn-onb-next';
+  next.addEventListener('click', () => {
+    playAudio('ui_click');
+    if (onboarding.step >= 2) {
+      uiState.mode = onboarding.mode || 'training';
+      if (uiState.mode === 'training') uiState.difficulty = 'recruit';
+      // 引导的最后一步就是开战，不再强迫新玩家额外寻找一次「开始」。
+      if (startOffline()) closeOnboarding({ persist: true });
+      return;
+    }
+    onboarding.step = Math.min(2, onboarding.step + 1);
+    renderOnboarding();
+    const focusTarget = onboarding.step === 1 ? $('.ui-onb-mode', el) : $('.ui-onb-next', el);
+    focusTarget?.focus?.({ preventScroll: true });
+  });
+  card.append(eyebrow, title, text, body, dots, actions);
+  actions.append(skip, next);
+  el.append(card);
+  (document.getElementById('screen-root') || document.body).append(el);
+  onboarding.el = el;
+  return el;
+}
+
+/** 首次启动时展示引导；已看过则静默跳过。 */
+export function maybeShowOnboarding({ force = false } = {}) {
+  bindUiV2Globals();
+  if (!force && tutorialDone()) return false;
+  const el = buildOnboarding();
+  if (!onboarding.shown && !force) onboarding.shown = true;
+  onboarding.step = 0;
+  // 初次游玩推荐低门槛训练；手动从设置重播则保留玩家当前选择。
+  onboarding.mode = force ? (uiState.mode || 'training') : 'training';
+  renderOnboarding();
+  el.classList.remove('hidden');
+  requestAnimationFrame(() => $('.ui-onb-next', el)?.focus?.({ preventScroll: true }));
+  return true;
+}
+// ── END 25d ─────────────────────────────────────────────────────────────────
+
+// ── 25e · 局内全屏计分板（16 队 · 自己队高亮 · 按击杀降序） ──────────────────
+const scoreboardState = { open: false, opener: null, timer: 0 };
+
+function scoreboardRows() {
+  const state = app?.state;
+  const selfId = app?.selfId || state?.selfId || null;
+  const players = Array.isArray(state?.players) ? state.players : [];
+  const teams = new Map();
+  for (const player of players) {
+    const key = Number.isFinite(player.team) ? player.team : 0;
+    let entry = teams.get(key);
+    if (!entry) {
+      entry = {
+        team: key, name: player.teamName || `第 ${key + 1} 小队`, kills: 0, damage: 0,
+        alive: 0, total: 0, members: [], mine: false,
+      };
+      teams.set(key, entry);
+    }
+    entry.kills += Number(player.kills) || 0;
+    entry.damage += Number(player.damage) || 0;
+    entry.total += 1;
+    if (player.alive !== false) entry.alive += 1;
+    if (player.id === selfId) entry.mine = true;
+    if (player.name) entry.members.push(player.name);
+  }
+  // 结算后优先采用服务端/模拟给出的名次（更权威），否则按击杀→伤害→存活排
+  const ranks = state?.result?.ranks;
+  const rankOf = new Map();
+  if (Array.isArray(ranks)) for (const rk of ranks) rankOf.set(Number(rk.team), rk);
+  const list = [...teams.values()];
+  list.sort((a, b) => b.kills - a.kills || b.damage - a.damage || b.alive - a.alive || a.team - b.team);
+  return { list, rankOf, selfId, state };
+}
+
+function renderScoreboardBody() {
+  const host = document.getElementById('ui-scoreboard-body');
+  if (!host) return;
+  clear(host);
+  const { list, rankOf, state } = scoreboardRows();
+  if (!list.length) {
+    host.append(emptyPanel('暂无对局数据', '进入对局后这里会显示全部小队的击杀与伤害。'));
+    return;
+  }
+  const mine = list.find(entry => entry.mine);
+  const summary = h('div', 'ui-scoreboard-summary');
+  const counts = state?.counts || {};
+  const bits = [
+    ['存活', state?.mode === 'solo' ? (counts.alive ?? '—') : (counts.aliveTeams ?? '—')],
+    ['总席位', counts.total ?? '—'],
+    ['小队', `${list.length}`],
+    ['我的淘汰', mine ? mine.kills : 0],
+  ];
+  for (const [label, value] of bits) {
+    const cell = h('span', null, `${label} `);
+    cell.append(h('b', null, String(value)));
+    summary.append(cell);
+  }
+  host.append(summary);
+
+  const table = h('div', 'ui-sb-table');
+  table.setAttribute('role', 'table');
+  table.setAttribute('aria-label', '全部小队战绩');
+  const head = h('div', 'ui-sb-row head');
+  head.setAttribute('role', 'row');
+  head.append(h('span', 'ui-sb-rank', '#'), h('span', null, '小队'), h('span', 'ui-sb-num', '人数'),
+    h('span', 'ui-sb-num', '击杀'), h('span', 'ui-sb-num', '总伤害'));
+  table.append(head);
+  list.forEach((entry, index) => {
+    const rk = rankOf.get(entry.team);
+    const rank = Number(rk?.rank) || index + 1;
+    const row = h('div', `ui-sb-row${entry.mine ? ' mine' : ''}${entry.alive === 0 ? ' dead' : ''}`);
+    row.setAttribute('role', 'row');
+    row.dataset.team = String(entry.team);
+    const rankCell = h('span', 'ui-sb-rank', `#${rank}`);
+    const teamCell = h('span', 'ui-sb-team');
+    const dot = h('i', 'ui-sb-dot');
+    dot.setAttribute('aria-hidden', 'true');
+    const name = h('b', null, entry.mine ? `${entry.name}（你）` : entry.name);
+    teamCell.append(dot, name);
+    if (entry.members.length && entry.members.length <= 4) {
+      teamCell.append(h('small', 'muted', entry.members.slice(0, 4).join(' · ')));
+    }
+    row.append(rankCell, teamCell,
+      h('span', 'ui-sb-num', `${entry.alive}/${entry.total}`),
+      h('span', 'ui-sb-num', String(entry.kills)),
+      h('span', 'ui-sb-num', fmtNum(entry.damage)));
+    table.append(row);
+  });
+  host.append(table);
+
+  const foot = h('div', 'ui-sb-foot');
+  foot.append(h('span', null, '按击杀降序 · 自己所在小队已高亮'), h('span', 'spacer'),
+    (() => {
+      const btn = h('button', 'ui-btn ui-ghost ui-sm', '关闭');
+      btn.type = 'button';
+      btn.id = 'btn-scoreboard-close';
+      btn.addEventListener('click', () => { playAudio('ui_click'); toggleScoreboard(false); });
+      return btn;
+    })());
+  host.append(foot);
+}
+
+function buildScoreboard() {
+  const wrap = h('div', 'ui-scoreboard');
+  wrap.id = 'ui-scoreboard-body';
+  wrap.setAttribute('aria-live', 'polite');
+  return wrap;
+}
+
+/** 打开 / 关闭全屏计分板。force=true 打开，false 关闭，省略则切换。 */
+export function toggleScoreboard(force) {
+  bindUiV2Globals();
+  const next = force === undefined ? !scoreboardState.open : !!force;
+  const node = document.getElementById('ui-scoreboard');
+  if (!next) {
+    if (!node || !node.classList.contains('open')) return false;
+    hideDialog('ui-scoreboard');
+    scoreboardState.open = false;
+    clearInterval(scoreboardState.timer);
+    scoreboardState.timer = 0;
+    const opener = scoreboardState.opener;
+    scoreboardState.opener = null;
+    if (opener && document.contains(opener)) { try { opener.focus({ preventScroll: true }); } catch { /* 忽略 */ } }
+    return false;
+  }
+  const active = document.activeElement;
+  scoreboardState.opener = active && active !== document.body ? active : null;
+  const modal = showModal('ui-scoreboard', {
+    title: '本局战绩',
+    eyebrow: 'SCOREBOARD',
+    hint: '按击杀降序排列 · 自己所在的小队已高亮',
+    body: buildScoreboard(),
+    wide: true,
+  });
+  scoreboardState.open = true;
+  renderScoreboardBody();
+  clearInterval(scoreboardState.timer);
+  scoreboardState.timer = setInterval(() => { if (scoreboardState.open) renderScoreboardBody(); }, 900);
+  const card = modal.querySelector('.modal-card');
+  if (card) { card.style.width = 'min(1080px, 96vw)'; card.style.maxHeight = '94vh'; }
+  const close = modal.querySelector('.modal-close');
+  if (close) close.setAttribute('aria-label', '关闭记分板');
+  setTimeout(() => document.getElementById('btn-scoreboard-close')?.focus?.({ preventScroll: true }), 60);
+  return true;
+}
+
+export function openScoreboard() { return toggleScoreboard(true); }
+export function closeScoreboard() { return toggleScoreboard(false); }
+export function isScoreboardOpen() { return scoreboardState.open; }
+// ── END 25e ─────────────────────────────────────────────────────────────────
 

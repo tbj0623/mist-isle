@@ -93,10 +93,10 @@
   --glass-blur-strong: blur(28px) saturate(1.35);
 
   --text-hi: #eaf6f1;
-  --text-mid: #c2d6cf;
-  --text-lo: #8ba39c;
-  --text-dim: #64807a;
-  --text-ghost: #415955;
+  --text-mid: #d6e5df;
+  --text-lo: #aec4bd;
+  --text-dim: #9ab2ab;
+  --text-ghost: #86a29b;
   --text-on-accent: #04241f;
 
   --line: rgba(151, 214, 199, 0.14);
@@ -2212,7 +2212,7 @@ button.list-row:active {
   gap: 6px;
   min-height: 44px;
   padding: 0 var(--sp-4);
-  color: var(--text-dim);
+  color: var(--text-lo);
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: var(--ls-wide);
@@ -3167,7 +3167,7 @@ button.list-row:active {
 
 .map-sub {
   padding: 0 var(--sp-4);
-  color: var(--text-dim);
+  color: var(--text-lo);
   font-family: var(--font-mono);
   font-size: var(--fs-2xs);
   letter-spacing: 0.1em;
@@ -4313,6 +4313,72 @@ dialog.modal[open]::backdrop {
   font-size: var(--fs-2xs);
 }
 
+/* 降落区投票（房间等待阶段） */
+.room-dropzone-btn {
+  width: 100%;
+  min-height: 44px;
+}
+
+/* 空降方式切换：与降落区投票同尺寸；开启跳伞时用青色描边标记「已选」 */
+.room-deploy-btn {
+  width: 100%;
+  min-height: 44px;
+}
+
+.room-deploy-btn.active {
+  border-color: rgba(111, 224, 200, 0.55);
+  color: var(--c-teal-300);
+  background: rgba(111, 224, 200, 0.1);
+}
+
+.room-deploy-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dropzone-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+#dropzone-canvas {
+  display: block;
+  /* 方形地图：宽随弹窗，但不超过视口高度，保证状态行与投票列表同屏可见 */
+  width: min(100%, 52vh);
+  height: auto;
+  margin-inline: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: #0a1b1c;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.dropzone-status {
+  margin: 0;
+  min-height: 18px;
+  font-size: var(--fs-xs);
+  color: var(--text-mid);
+}
+
+.dropzone-votes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-height: 30px;
+}
+
+.dropzone-chip {
+  font-size: var(--fs-xs);
+}
+
+.dropzone-chip.mine {
+  border-color: rgba(245, 180, 69, 0.5);
+  color: var(--c-amber-500);
+}
+
 /* 帮助 */
 .help-grid {
   display: grid;
@@ -4871,12 +4937,15 @@ dialog.modal[open]::backdrop {
 #game-menu,
 #pause-btn,
 .hud-menu-btn {
+  position: relative;
   display: grid;
   place-items: center;
   width: calc(36 * var(--hud-u));
   height: calc(36 * var(--hud-u));
-  min-width: 34px;
-  min-height: 34px;
+  /* 命中区 ≥44×44（契约 §11）：实测 #game-menu 只有 34×34，是整局最常点、
+     却最小的按钮。图标尺寸不变，只是外框补足到可点面。 */
+  min-width: 44px;
+  min-height: 44px;
   padding: 0;
   border: 1px solid rgba(151, 214, 199, 0.2);
   border-radius: var(--hud-radius);
@@ -5508,6 +5577,28 @@ dialog.modal[open]::backdrop {
   color: var(--c-red-400);
 }
 
+/* 低弹药 / 空弹匣警告（ui-hud updateWeapon 驱动）：
+   琥珀 = 弹匣 ≤ 20%，红色 = 打空；打空后数字呼吸闪烁（opacity-only 动画），
+   弹匣与备弹同时为 0 时武器面板描边转红提示「无弹可用」。 */
+#ammo.low,
+.weapon-panel .ammo.low {
+  color: var(--c-amber-500);
+}
+
+#ammo.empty,
+.weapon-panel .ammo.empty {
+  animation: ammoBlink 760ms steps(2, end) infinite;
+}
+
+.weapon-panel.dry {
+  border-color: rgba(255, 92, 92, 0.5);
+}
+
+@keyframes ammoBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 #reserve,
 .weapon-panel .reserve {
   color: var(--text-dim);
@@ -6050,6 +6141,84 @@ dialog.modal[open]::backdrop {
 
 .phase-banner.hidden {
   display: none !important;
+}
+
+/* ── 空降状态条（#deploy-status）────────────────────────────────────────────
+   只在 deploying 且玩家在舱内/伞降时显示：左侧阶段名、右侧高度或可跳倒计时、
+   底部一条高度进度。位于横幅正下方，不抢中央准星区域。 */
+.hud-deploy,
+#deploy-status {
+  position: absolute;
+  left: 50%;
+  top: calc(16% + 52 * var(--hud-u));
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--hud-u));
+  min-width: calc(190 * var(--hud-u));
+  padding: calc(5 * var(--hud-u)) calc(14 * var(--hud-u)) calc(7 * var(--hud-u));
+  transform: translateX(-50%);
+  border: 1px solid rgba(143, 216, 255, 0.35);
+  border-radius: calc(3 * var(--hud-u));
+  background: rgba(4, 15, 16, 0.78);
+  color: var(--c-teal-300);
+  font-family: var(--font-mono);
+  font-size: calc(10 * var(--hud-u));
+  letter-spacing: 0.16em;
+  pointer-events: none;
+}
+
+#deploy-status .deploy-stage {
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+#deploy-status .deploy-alt {
+  margin-left: auto;
+  color: var(--c-amber-300);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#deploy-status .deploy-progress {
+  position: absolute;
+  left: calc(10 * var(--hud-u));
+  right: calc(10 * var(--hud-u));
+  bottom: calc(2 * var(--hud-u));
+  height: calc(2 * var(--hud-u));
+  background: rgba(143, 216, 255, 0.16);
+  overflow: hidden;
+}
+
+#deploy-status .deploy-progress > i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, rgba(143, 216, 255, 0.5), var(--c-teal-300));
+  transition: transform 120ms linear;
+}
+
+#deploy-status.hidden,
+.hud-deploy.hidden { display: none !important; }
+
+/* 跳伞按钮：只有舱门开启时可见，呼吸高亮提示「现在可以跳」 */
+#jump-action { display: none; }
+#jump-action:not(.hidden) { display: flex; }
+#jump-action.ready {
+  border-color: rgba(143, 216, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(143, 216, 255, 0.35), 0 0 16px rgba(143, 216, 255, 0.35);
+  animation: jumpPulse 1.1s ease-in-out infinite;
+}
+
+@keyframes jumpPulse {
+  0%, 100% { opacity: 0.86; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #jump-action.ready { animation: none; }
 }
 
 /* 交互 / 救援提示 */
@@ -7238,11 +7407,14 @@ dialog.modal[open]::backdrop {
     display: none;
   }
 
+  /* 小屏上此前被压到 40×40：实测 #game-menu 34×34、二级页返回/帮助键 40×44，
+     全部低于契约 §11 的 44px。这里统一给到 44。 */
   .icon-btn,
   .icon-button {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .screen-body {
@@ -7835,6 +8007,10 @@ dialog.modal[open]::backdrop {
   #pause-btn {
     width: calc(32 * var(--hud-u));
     height: calc(32 * var(--hud-u));
+    /* 小屏横屏下这条规则会把按钮压到 32px（基线 34px 兜底也被覆盖）。
+       视觉尺寸不变，用最小尺寸把命中区抬回 44px。 */
+    min-width: 44px;
+    min-height: 44px;
   }
 
   #killfeed {
@@ -7924,7 +8100,12 @@ dialog.modal[open]::backdrop {
   }
 }
 
-/* ---- 减少动态偏好 ---- */
+/* ---- 减少动态偏好 ----
+   两条触发路径共用同一组规则：
+     1) 系统级 prefers-reduced-motion（玩家在 OS 里关了动画）
+     2) 游戏内「减少动态效果」设置 —— main.js 的 applySettings() 给 body 加
+        .reduced-motion 类，但此前 style.css 里**没有任何 .reduced-motion 规则**，
+        开关拨了等于没拨（只有系统级媒体查询那条生效）。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -7950,6 +8131,32 @@ dialog.modal[open]::backdrop {
   .rarity-epic::before {
     display: none;
   }
+}
+
+/* 与上面同一组规则，触发源是 body.reduced-motion（游戏内设置）。 */
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+body.reduced-motion .screen {
+  transform: none;
+}
+
+body.reduced-motion .status-dot,
+body.reduced-motion .low-hp-overlay,
+body.reduced-motion .health-panel.low .health-track > i,
+body.reduced-motion .health-panel.critical .health-track > i {
+  animation: none !important;
+}
+
+body.reduced-motion .rarity-legendary::before,
+body.reduced-motion .rarity-epic::before {
+  display: none;
 }
 
 /* ---- 高对比度偏好 ---- */
@@ -8361,8 +8568,9 @@ svg {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  /* 命中区 ≥44×44（契约 §11）。此前 40×40，实测是二级页最小的可点元素之一。 */
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: rgba(3, 11, 12, 0.6);
@@ -8913,14 +9121,33 @@ svg {
   text-align: center;
 }
 
+/* 结算页「最终排名」：过去 .result-rank 的 40–72px 字号同时作用于数字与标签，
+   <small> 默认 0.83em 继承下来仍有 60px，「最终排名」四个字占掉半个弹窗高度，
+   把经验条与奖励挤进滚动区。现在大号只留给数字（.rank-display 自己有字号），
+   标签固定小号。 */
 .result-rank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   color: var(--text-hi);
   font-family: var(--font-mono);
-  font-size: clamp(40px, 6vw, 72px);
+  font-size: var(--fs-sm);
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.04em;
   text-shadow: 0 0 46px rgba(111, 224, 200, 0.32);
+}
+
+.result-rank > small {
+  font-family: var(--font-sans, system-ui);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: var(--ls-caps);
+  line-height: 1.3;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-shadow: none;
 }
 
 .result-stat {
@@ -9089,8 +9316,8 @@ svg {
   place-items: center;
   width: calc(34 * var(--hud-u));
   height: calc(34 * var(--hud-u));
-  min-width: 34px;
-  min-height: 34px;
+  min-width: 44px;
+  min-height: 44px;
   border: 1px solid rgba(151, 214, 199, 0.2);
   border-radius: var(--hud-radius);
   background: rgba(4, 15, 16, 0.62);
@@ -9627,9 +9854,45 @@ svg {
   pointer-events: none;
 }
 
-#hud.in-match #touch-controls,
-#hud.in-match #game-menu {
+/* #hud 整体 pointer-events:none 是为了让鼠标操作穿透到 canvas（瞄准/开火），
+   所以**每一个需要点击的 HUD 子面板都必须在这里显式放行**。
+   历史上只放行了 touch-controls 与 game-menu，导致：
+     - 点「医疗包/绷带/护盾」按钮会穿透到 canvas 变成开火（治疗完全不可用）；
+     - 小地图、背包、武器槽位、击杀播报里的可点元素全部失效。 */
+#hud.in-match #game-menu,
+#hud.in-match #consumables,
+#hud.in-match #health-panel,
+#hud.in-match #weapon-panel,
+#hud.in-match #minimap-wrap,
+#hud.in-match #scoreboard,
+#hud.in-match #chat-panel,
+#hud.in-match #fullmap,
+#hud.in-match #swap-action,
+#hud.in-match #throwables,
+#hud.in-match #backpack-action {
   pointer-events: auto;
+}
+
+/* ⚠ #touch-controls 是**全屏铺满**的容器（inset:0），它自己必须保持
+   pointer-events:none，只放行它的子元素（摇杆/动作键）。
+   曾经在这里用 ID 选择器给容器本身加了 auto —— 优先级高于 `.touch-controls`
+   的类规则，结果整块透明层覆盖屏幕、吞掉所有点击（实测点 #game-menu
+   会被 touch-controls「intercepts pointer events」，暂停按钮彻底点不动）。 */
+#hud.in-match #touch-controls {
+  pointer-events: none;
+}
+#hud.in-match #touch-controls > * {
+  pointer-events: auto;
+}
+
+/* 小屏不再整块隐藏消耗品（否则触屏玩家没有任何药品入口），改为紧凑排布 */
+@media (max-height: 500px) {
+  #hud #consumables {
+    display: flex;
+    gap: 4px;
+    transform: scale(0.86);
+    transform-origin: left bottom;
+  }
 }
 
 /* 脉冲 / 淡入类（uiux 动态加） */
@@ -10096,7 +10359,7 @@ svg {
 
 .map-pick .map-sub {
   padding: 0;
-  color: var(--text-ghost);
+  color: var(--text-lo);
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.12em;
@@ -10433,5 +10696,2247 @@ svg {
   #hud #aim-stick {
     right: calc(var(--safe-r) + 8px);
     bottom: calc(var(--safe-b) + 8px);
+  }
+}
+
+
+/* ==========================================================================
+   41 · 小屏 HUD 分区（844×390 / 640×360）
+   --------------------------------------------------------------------------
+   实测 ui-hud 的 #action-buttons 有 10 个按钮（换弹/治疗/交互/投掷/切枪/
+   冲刺/蹲伏/翻滚/背包/标记），必须用多行网格并占据右下角，否则会压住武器板。
+   分区（从左到右、从上到下）：
+     左：小队板 → 生命板 → 战术按钮 → 移动摇杆
+     右：小地图 → 击杀播报 → 武器板 → 动作按钮(3 列 × 4 行) → 瞄准摇杆
+   ========================================================================== */
+@media (max-height: 500px) and (max-width: 1000px) {
+  /* ---------- 顶部条 ---------- */
+  #hud .hud-top {
+    top: var(--safe-t);
+    gap: 3px;
+    padding: 3px 0;
+    max-width: calc(100vw - 16px);
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  #hud .hud-top .hud-stats,
+  #hud .hud-top .zone-pill,
+  #hud .hud-top .hud-stage {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+  }
+
+  #hud .hud-alive b,
+  #hud .hud-kills b {
+    font-size: 12px;
+  }
+
+  #hud .hud-weather,
+  #hud .fps-meter {
+    display: none;
+  }
+
+  /* ---------- 小地图（右上） ---------- */
+  #hud .hud-map {
+    top: calc(var(--safe-t) + 4px);
+    right: calc(var(--safe-r) + 4px);
+  }
+
+  #hud .minimap-wrap canvas,
+  #hud #minimap {
+    width: 80px;
+    height: 80px;
+  }
+
+  #hud .minimap-wrap {
+    padding: 2px;
+  }
+
+  #hud .hud-map .map-name,
+  #hud .hud-weather {
+    display: none;
+  }
+
+  /* ---------- 击杀播报（右侧中部，最多 3 行） ---------- */
+  #hud #killfeed {
+    top: calc(var(--safe-t) + 92px);
+    right: calc(var(--safe-r) + 4px);
+    left: auto;
+    transform: none;
+    max-width: 36vw;
+    max-height: 56px;
+    overflow: hidden;
+    gap: 2px;
+  }
+
+  #hud #killfeed .killfeed-row {
+    min-height: 0;
+    padding: 1px 5px;
+    font-size: 8px;
+    line-height: 1.25;
+  }
+
+  /* ---------- 武器板（右侧，动作簇上方） ---------- */
+  #hud .weapon-panel {
+    right: calc(var(--safe-r) + 4px);
+    bottom: calc(var(--safe-b) + 156px);
+    min-width: 104px;
+    padding: 4px 6px;
+    gap: 1px;
+  }
+
+  #hud .weapon-panel .weapon-name,
+  #hud #weapon-name {
+    font-size: 8px;
+    letter-spacing: 0.06em;
+  }
+
+  #hud .weapon-panel .weapon-rarity,
+  #hud #weapon-rarity {
+    font-size: 7px;
+  }
+
+  #hud .weapon-panel .ammo,
+  #hud #ammo {
+    font-size: 19px;
+  }
+
+  #hud .weapon-panel .reserve,
+  #hud #reserve {
+    font-size: 9px;
+  }
+
+  #hud #reload-progress {
+    height: 2px;
+  }
+
+  #hud #throwables,
+  #hud #swap-action {
+    display: none;
+  }
+
+  /* ---------- 动作按钮簇（右下角 3 列 × 4 行） ---------- */
+  #hud #action-buttons,
+  #hud .action-buttons {
+    right: calc(var(--safe-r) + 4px);
+    bottom: calc(var(--safe-b) + 4px);
+    display: grid;
+    grid-template-columns: repeat(3, 44px);
+    grid-auto-rows: 44px;
+    gap: 4px;
+    max-width: none;
+    justify-items: stretch;
+  }
+
+  #hud #action-buttons .touch-btn,
+  #hud #action-buttons .action-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  #hud #action-buttons .touch-btn svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  #hud #action-buttons .touch-btn small {
+    display: none;
+  }
+
+  /* ---------- 战术按钮（左下角横排） ---------- */
+  #hud #tactical-buttons,
+  #hud .tactical-buttons {
+    left: calc(var(--safe-l) + 4px);
+    bottom: calc(var(--safe-b) + 4px);
+    flex-direction: row;
+    gap: 4px;
+    max-width: calc(100vw - 320px);
+    overflow: hidden;
+  }
+
+  #hud #tactical-buttons button {
+    min-width: 38px;
+    min-height: 28px;
+    padding: 2px 6px;
+    font-size: 8px;
+  }
+
+  /* ---------- 摇杆 ---------- */
+  #hud #move-stick {
+    left: calc(var(--safe-l) + 6px);
+    bottom: calc(var(--safe-b) + 40px);
+    width: 84px;
+    height: 84px;
+    min-width: 72px;
+    min-height: 72px;
+  }
+
+  #hud #aim-stick {
+    right: calc(var(--safe-r) + 148px);
+    bottom: calc(var(--safe-b) + 6px);
+    width: 84px;
+    height: 84px;
+    min-width: 72px;
+    min-height: 72px;
+  }
+
+  #hud #move-stick .stick,
+  #hud #aim-stick .stick {
+    width: 32px;
+    height: 32px;
+    min-width: 26px;
+    min-height: 26px;
+  }
+
+  #hud #move-stick .stick-label,
+  #hud #aim-stick .stick-label {
+    display: none;
+  }
+
+  /* ---------- 生命板（左下，摇杆上方） ---------- */
+  #hud #health-panel {
+    left: calc(var(--safe-l) + 4px);
+    bottom: calc(var(--safe-b) + 128px);
+    width: 152px;
+    padding: 4px 6px;
+    gap: 2px;
+  }
+
+  #hud #health-panel .player-line b,
+  #hud #health-panel .player-name {
+    font-size: 8px;
+  }
+
+  #hud #health-panel .health-value,
+  #hud #health-value {
+    font-size: 13px;
+  }
+
+  #hud .health-track {
+    height: 4px;
+    min-height: 3px;
+  }
+
+  #hud .armor-track,
+  #hud .stamina-track,
+  #hud .shield-track {
+    height: 2px;
+    min-height: 2px;
+  }
+
+  #hud #health-panel .player-state,
+  #hud #player-state {
+    display: none;
+  }
+
+  /* #consumables 不再整块隐藏 —— 小屏（<=500px 高）正是横屏手机，
+     隐藏它等于让触屏玩家完全没有药品入口。改为紧凑缩放进生命面板下方。 */
+  #hud #consumables {
+    display: flex;
+    gap: 3px;
+    transform: scale(0.8);
+    transform-origin: left top;
+  }
+
+  /* ---------- 小队面板（左上） ---------- */
+  #hud #squad-panel {
+    top: calc(var(--safe-t) + 34px);
+    left: calc(var(--safe-l) + 4px);
+    width: 112px;
+    padding: 3px 4px;
+    gap: 2px;
+  }
+
+  #hud .squad-heading {
+    font-size: 8px;
+    padding-bottom: 2px;
+  }
+
+  #hud .squad-member {
+    min-height: 14px;
+    font-size: 8px;
+    padding: 0 3px;
+  }
+
+  #hud .squad-member small {
+    font-size: 7px;
+  }
+
+  /* ---------- 中央提示 ---------- */
+  #hud .context-hint,
+  #hud #context-hint,
+  #hud .interact-prompt,
+  #hud #interact-prompt,
+  #hud .reload-prompt,
+  #hud #reload-prompt {
+    bottom: calc(var(--safe-b) + 96px);
+    font-size: 9px;
+    padding: 3px 8px;
+  }
+
+  #hud .phase-banner {
+    top: calc(var(--safe-t) + 56px);
+    font-size: 10px;
+    padding: 3px 12px;
+  }
+}
+
+/* 小屏首页：内容高度收敛到一屏（844×390 / 640×360 不产生 7px 溢出） */
+@media (max-height: 500px) and (max-width: 1000px) {
+  [data-screen="home"] .screen-body.home-body {
+    row-gap: clamp(8px, 1.6vh, 14px);
+    padding-top: 8px;
+    padding-bottom: 6px;
+  }
+
+  [data-screen="home"] .home-logo-cn {
+    font-size: clamp(26px, 5.6vw, 40px);
+  }
+
+  [data-screen="home"] .home-logo .tagline {
+    font-size: 12px;
+    margin-top: 2px;
+  }
+
+  [data-screen="home"] .home-hero {
+    max-width: min(560px, 86%);
+    gap: 4px;
+  }
+
+  [data-screen="home"] .home-nav {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: minmax(44px, auto);
+    gap: 5px;
+    max-width: none;
+  }
+
+  [data-screen="home"] .home-nav-item {
+    min-height: 44px;
+    padding: 6px 9px;
+  }
+
+  [data-screen="home"] .home-nav-item b {
+    font-size: 12px;
+  }
+
+  [data-screen="home"] .home-nav-item small {
+    font-size: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  [data-screen="home"] .player-card {
+    width: 236px;
+    padding: 6px 8px;
+  }
+
+  [data-screen="home"] .home-foot {
+    font-size: 9px;
+  }
+
+  [data-screen="home"] .home-foot .hint {
+    display: none;
+  }
+}
+
+/* 小屏首页：导航项保留英文副标题（覆盖早前 ≤760px 的隐藏规则） */
+@media (max-height: 500px) and (max-width: 1000px) {
+  [data-screen="home"] .home-nav-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "name arrow" "hint arrow";
+    align-items: center;
+    gap: 1px 6px;
+  }
+
+  [data-screen="home"] .home-nav-item small {
+    display: block;
+    grid-area: hint;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+    font-size: 8px;
+    letter-spacing: 0.02em;
+  }
+
+  [data-screen="home"] .home-nav-item b {
+    grid-area: name;
+  }
+
+  [data-screen="home"] .home-nav-item .arrow {
+    grid-area: arrow;
+    font-size: 11px;
+  }
+
+  [data-screen="home"] .home-nav-item .badge {
+    top: 4px;
+    right: 4px;
+  }
+}
+
+/* 640×360 再收一档，保证首页与出击页一屏可读 */
+@media (max-height: 380px) {
+  [data-screen="home"] .home-nav {
+    grid-auto-rows: minmax(40px, auto);
+    gap: 4px;
+  }
+
+  [data-screen="home"] .home-nav-item {
+    padding: 4px 8px;
+  }
+
+  [data-screen="home"] .home-logo-cn {
+    font-size: clamp(22px, 5vw, 32px);
+  }
+
+  [data-screen="home"] .home-logo-en {
+    font-size: 9px;
+  }
+
+  [data-screen="home"] .home-nav-item small {
+    font-size: 7px;
+  }
+}
+
+/* 小屏最终定位：武器板必须整体位于动作按钮簇之上（动作簇 3×4 = 140px 高） */
+@media (max-height: 500px) and (max-width: 1000px) {
+  #hud #weapon-panel.weapon-panel {
+    right: calc(var(--safe-r) + 4px);
+    bottom: calc(var(--safe-b) + 152px);
+  }
+
+  #hud #killfeed.killfeed {
+    top: calc(var(--safe-t) + 92px);
+    max-height: 24px;
+    overflow: hidden;
+  }
+
+  #hud #action-buttons.action-buttons {
+    right: calc(var(--safe-r) + 4px);
+    bottom: calc(var(--safe-b) + 4px);
+  }
+}
+
+/* 640×360 极窄：击杀播报让到小地图下方、武器板左移，彻底避开 */
+@media (max-height: 380px) and (max-width: 700px) {
+  #hud #killfeed.killfeed {
+    top: calc(var(--safe-t) + 62px);
+    right: calc(var(--safe-r) + 92px);
+    max-width: 30vw;
+    max-height: 20px;
+  }
+
+  #hud #weapon-panel.weapon-panel {
+    right: calc(var(--safe-r) + 148px);
+    bottom: calc(var(--safe-b) + 128px);
+    min-width: 96px;
+  }
+
+  #hud #weapon-panel .ammo,
+  #hud #ammo {
+    font-size: 17px;
+  }
+}
+
+/* ==========================================================================
+   42 · 首屏 CTA 可见性（720p）与超长屏压缩
+   --------------------------------------------------------------------------
+   目标（Lead 验收）：
+   - 1280×720 play 屏 #btn-offline / #btn-online 首屏可见（bottom ≤ 720）
+   - 844×390 play 屏 scrollHeight ≤ 600（最多滚 1.7 屏）
+   - 其它屏 scrollHeight / clientHeight ≤ 4
+   ========================================================================== */
+
+/* ---------- A. play 屏（桌面 720p）：标题区、卡片、侧栏同步收一档 ---------- */
+[data-screen="play"] .screen-head {
+  gap: 2px 16px;
+}
+
+[data-screen="play"] .screen-head .eyebrow {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+}
+
+[data-screen="play"] .screen-head .title-lg {
+  font-size: clamp(22px, 2.4vw, 32px);
+  letter-spacing: -0.02em;
+}
+
+[data-screen="play"] .screen-head .muted {
+  font-size: var(--fs-xs);
+  max-width: 42ch;
+}
+
+[data-screen="play"] .screen-body {
+  gap: 12px;
+}
+
+[data-screen="play"] .screen-main-content {
+  gap: 12px;
+}
+
+/* 模式卡：更紧凑，描述最多 2 行 */
+[data-screen="play"] .mode-pick {
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+[data-screen="play"] .mode-pick > .mode-icon {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 0;
+}
+
+[data-screen="play"] .mode-pick .mode-desc {
+  -webkit-line-clamp: 2;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+[data-screen="play"] .mode-pick > .mode-meta {
+  padding-top: 5px;
+  font-size: 8px;
+}
+
+/* 地图卡：缩略图压矮，描述 2 行 */
+[data-screen="play"] .map-pick .map-art {
+  height: clamp(44px, 7vh, 70px);
+}
+
+[data-screen="play"] .map-pick .map-info {
+  gap: 2px;
+  padding: 8px 10px 0;
+}
+
+[data-screen="play"] .map-pick .map-desc {
+  -webkit-line-clamp: 2;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+[data-screen="play"] .map-pick .map-tags {
+  margin-top: 3px;
+}
+
+[data-screen="play"] .map-pick .map-tags .chip {
+  height: 18px;
+  min-height: 18px;
+  padding: 0 6px;
+  font-size: 8px;
+}
+
+[data-screen="play"] .map-pick .map-diff {
+  padding: 6px 10px 9px;
+}
+
+/* 难度行与 CTA 行 */
+[data-screen="play"] .difficulty-row {
+  gap: 8px 12px;
+}
+
+[data-screen="play"] .play-actions {
+  gap: 10px;
+  margin-top: 0;
+}
+
+[data-screen="play"] .play-actions .btn {
+  min-height: 46px;
+}
+
+/* 侧栏三段：等高压缩，避免撑高主栅格 */
+[data-screen="play"] .play-side {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 10px;
+  align-content: start;
+}
+
+[data-screen="play"] .play-side .panel-head {
+  min-height: 36px;
+  padding: 6px 12px;
+}
+
+[data-screen="play"] .play-side .panel-head h3 {
+  font-size: var(--fs-xs);
+  letter-spacing: 0.14em;
+}
+
+[data-screen="play"] .play-side .panel-body {
+  padding: 8px 12px 10px;
+  gap: 8px;
+}
+
+[data-screen="play"] .play-side .panel-note,
+[data-screen="play"] .play-side .panel-tips {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+[data-screen="play"] .play-side .squad-grid {
+  gap: 6px;
+}
+
+[data-screen="play"] .play-side .squad-slot {
+  aspect-ratio: auto;
+  min-height: 44px;
+  padding: 4px;
+}
+
+[data-screen="play"] .play-side .squad-slot b {
+  font-size: 10px;
+}
+
+[data-screen="play"] .play-side .stat {
+  padding: 6px 10px;
+  gap: 0;
+}
+
+[data-screen="play"] .play-side .stat b,
+[data-screen="play"] .play-side .stat-value {
+  font-size: var(--fs-lg);
+}
+
+[data-screen="play"] .play-side .stat small,
+[data-screen="play"] .play-side .stat-label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+/* 行动要点：矮屏只保留前 2 条（信息可在外层滚动区补看，不影响操作） */
+@media (max-height: 800px) {
+  [data-screen="play"] .play-side .tip-row:nth-of-type(n + 3) {
+    display: none;
+  }
+
+  [data-screen="play"] .play-side .panel-tips .panel-body,
+  [data-screen="play"] .play-side .panel-tips.panel-body {
+    padding-bottom: 8px;
+  }
+}
+
+/* ---------- B. 844×390 / 640×360：play 屏整屏收进约 1.7 屏 ---------- */
+@media (max-height: 500px) and (max-width: 1000px) {
+  /* 标题区：一行式，省略说明文字 */
+  [data-screen="play"] .screen-head {
+    display: flex;
+    flex-wrap: inherit;
+    align-items: baseline;
+    gap: 2px 10px;
+  }
+
+  [data-screen="play"] .screen-head > div > .eyebrow {
+    display: none;
+  }
+
+  [data-screen="play"] .screen-head .title-lg {
+    font-size: 20px;
+    letter-spacing: -0.01em;
+  }
+
+  [data-screen="play"] .screen-head .muted {
+    font-size: 10px;
+    max-width: none;
+    margin-left: auto;
+    text-align: right;
+  }
+
+  [data-screen="play"] .screen-body {
+    gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  [data-screen="play"] .screen-main,
+  [data-screen="play"] .screen-main-content {
+    gap: 8px;
+  }
+
+  /* 模式卡：2 列压缩版，隐藏描述与 meta 分隔线 */
+  [data-screen="play"] .mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  [data-screen="play"] .mode-pick {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    min-height: 48px;
+  }
+
+  [data-screen="play"] .mode-pick > .mode-icon {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+  }
+
+  [data-screen="play"] .mode-pick > .mode-icon svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  [data-screen="play"] .mode-pick .mode-name {
+    font-size: 12px;
+  }
+
+  [data-screen="play"] .mode-pick .mode-desc,
+  [data-screen="play"] .mode-pick > .mode-meta {
+    display: none;
+  }
+
+  /* 地图卡：3 列矮卡，仅名称 + 难度点 */
+  [data-screen="play"] .map-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  [data-screen="play"] .map-pick .map-art {
+    height: 40px;
+  }
+
+  [data-screen="play"] .map-pick .map-info {
+    gap: 1px;
+    padding: 5px 8px 0;
+  }
+
+  [data-screen="play"] .map-pick .map-name {
+    font-size: 11px;
+  }
+
+  [data-screen="play"] .map-pick .map-sub {
+    font-size: 8px;
+  }
+
+  [data-screen="play"] .map-pick .map-desc,
+  [data-screen="play"] .map-pick .map-tags {
+    display: none;
+  }
+
+  [data-screen="play"] .map-pick .map-diff {
+    padding: 4px 8px 6px;
+  }
+
+  [data-screen="play"] .map-pick .map-diff small {
+    display: none;
+  }
+
+  /* 难度行：换成一行紧凑 */
+  [data-screen="play"] .difficulty-row {
+    gap: 6px 10px;
+  }
+
+  [data-screen="play"] .difficulty-row .field-label {
+    display: none;
+  }
+
+  [data-screen="play"] .difficulty-row .segmented > button {
+    min-height: 30px;
+    min-width: 52px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
+  [data-screen="play"] .difficulty-row .diff-desc {
+    display: none;
+  }
+
+  /* CTA 行：并排大按钮 */
+  [data-screen="play"] .play-actions {
+    gap: 8px;
+  }
+
+  [data-screen="play"] .play-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 48px;
+    font-size: 13px;
+  }
+
+  /* 侧栏：折叠为单行摘要（小队 4 格），隐藏情报/要点 */
+  [data-screen="play"] .play-side {
+    display: block;
+  }
+
+  [data-screen="play"] .play-side > .panel:nth-child(n + 2) {
+    display: none;
+  }
+
+  [data-screen="play"] .play-side .panel-head {
+    min-height: 30px;
+    padding: 4px 10px;
+  }
+
+  [data-screen="play"] .play-side .panel-body {
+    padding: 6px 10px 8px;
+    gap: 6px;
+  }
+
+  [data-screen="play"] .play-side .squad-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  [data-screen="play"] .play-side .squad-slot {
+    min-height: 34px;
+    font-size: 9px;
+  }
+
+  [data-screen="play"] .play-side .panel-note {
+    display: none;
+  }
+}
+
+/* ---------- C. 长屏压缩：career / loadout / missions / codex / settings ----------
+   目标：scrollHeight / clientHeight ≤ 4（844×390 下 career 原 5.8 屏、loadout 原 5.0 屏）
+   手段只用「密度」：面板内边距、栅格列数、行高、非关键说明文字。不删功能。 */
+
+/* 次级屏标题区统一收一档（play 屏已在 §42-A 单独处理） */
+[data-screen="career"] .screen-head,
+[data-screen="loadout"] .screen-head,
+[data-screen="missions"] .screen-head,
+[data-screen="codex"] .screen-head,
+[data-screen="settings"] .screen-head,
+[data-screen="store"] .screen-head {
+  gap: 2px 16px;
+}
+
+[data-screen="career"] .screen-head .title-lg,
+[data-screen="loadout"] .screen-head .title-lg,
+[data-screen="missions"] .screen-head .title-lg,
+[data-screen="codex"] .screen-head .title-lg,
+[data-screen="settings"] .screen-head .title-lg,
+[data-screen="store"] .screen-head .title-lg {
+  font-size: clamp(21px, 2.3vw, 30px);
+}
+
+[data-screen="career"] .screen-head .muted,
+[data-screen="loadout"] .screen-head .muted,
+[data-screen="missions"] .screen-head .muted,
+[data-screen="codex"] .screen-head .muted,
+[data-screen="settings"] .screen-head .muted,
+[data-screen="store"] .screen-head .muted {
+  font-size: var(--fs-xs);
+}
+
+/* 所有次级屏：内容栈与面板内边距收紧 */
+[data-screen="career"] .screen-body,
+[data-screen="loadout"] .screen-body,
+[data-screen="missions"] .screen-body,
+[data-screen="codex"] .screen-body,
+[data-screen="settings"] .screen-body,
+[data-screen="store"] .screen-body {
+  gap: 12px;
+}
+
+[data-screen="career"] .screen-main-content,
+[data-screen="loadout"] .screen-main-content,
+[data-screen="missions"] .screen-main-content,
+[data-screen="codex"] .screen-main-content,
+[data-screen="settings"] .screen-main-content,
+[data-screen="store"] .screen-main-content,
+[data-screen="career"] .stack-lg,
+[data-screen="loadout"] .stack-lg,
+[data-screen="missions"] .stack-lg,
+[data-screen="codex"] .stack-lg,
+[data-screen="settings"] .stack-lg,
+[data-screen="store"] .stack-lg {
+  gap: 12px;
+}
+
+[data-screen="career"] .panel-head,
+[data-screen="loadout"] .panel-head,
+[data-screen="missions"] .panel-head,
+[data-screen="codex"] .panel-head,
+[data-screen="settings"] .panel-head,
+[data-screen="store"] .panel-head {
+  min-height: 38px;
+  padding: 7px 14px;
+}
+
+[data-screen="career"] .panel-head h3,
+[data-screen="loadout"] .panel-head h3,
+[data-screen="missions"] .panel-head h3,
+[data-screen="codex"] .panel-head h3,
+[data-screen="settings"] .panel-head h3,
+[data-screen="store"] .panel-head h3 {
+  font-size: var(--fs-xs);
+  letter-spacing: 0.14em;
+}
+
+[data-screen="career"] .panel-body,
+[data-screen="loadout"] .panel-body,
+[data-screen="missions"] .panel-body,
+[data-screen="codex"] .panel-body,
+[data-screen="settings"] .panel-body,
+[data-screen="store"] .panel-body {
+  padding: 10px 14px 12px;
+  gap: 8px;
+}
+
+/* ---- career 专项：概览压矮、成就 5 列 → 6 列、战报行压缩 ---- */
+[data-screen="career"] .career-head {
+  padding: 12px 16px;
+  gap: 14px;
+}
+
+[data-screen="career"] .career-head .level-ring {
+  width: 58px;
+  height: 58px;
+  font-size: var(--fs-md);
+}
+
+[data-screen="career"] .career-meta {
+  gap: 5px;
+}
+
+[data-screen="career"] .career-name {
+  font-size: var(--fs-lg);
+}
+
+[data-screen="career"] .stat-grid {
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 6px;
+}
+
+[data-screen="career"] .stat-grid .stat {
+  padding: 6px 9px;
+}
+
+[data-screen="career"] .stat-grid .stat b {
+  font-size: var(--fs-lg);
+}
+
+[data-screen="career"] .ach-grid {
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+  gap: 6px;
+}
+
+[data-screen="career"] .ach-card {
+  padding: 8px 10px;
+  gap: 8px;
+}
+
+[data-screen="career"] .ach-icon {
+  width: 28px;
+  height: 28px;
+}
+
+[data-screen="career"] .ach-card b {
+  font-size: var(--fs-2xs);
+}
+
+[data-screen="career"] .ach-card small {
+  font-size: 9px;
+}
+
+[data-screen="career"] .match-history {
+  gap: 5px;
+}
+
+[data-screen="career"] .match-history .list-row {
+  min-height: 40px;
+  padding: 6px 10px;
+}
+
+/* ---- loadout 专项：武器槽、配件、chip 组压缩 ---- */
+[data-screen="loadout"] .weapon-slots {
+  gap: 6px;
+}
+
+[data-screen="loadout"] .weapon-slot {
+  min-height: 56px;
+  padding: 6px 12px;
+}
+
+[data-screen="loadout"] .weapon-slot .slot-art {
+  width: 42px;
+  height: 30px;
+}
+
+[data-screen="loadout"] .attachment-grid {
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px;
+}
+
+[data-screen="loadout"] .slot.slot-sm {
+  min-height: 46px;
+  padding: 5px 9px;
+}
+
+[data-screen="loadout"] .chip-row {
+  gap: 6px;
+}
+
+[data-screen="loadout"] .chip {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: var(--fs-2xs);
+}
+
+[data-screen="loadout"] .field-help {
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+[data-screen="loadout"] .skin-grid {
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 6px;
+}
+
+[data-screen="loadout"] .skin-card {
+  padding: 6px;
+  gap: 4px;
+}
+
+[data-screen="loadout"] .skin-card .skin-art {
+  height: 48px;
+}
+
+/* ---- store / codex / missions / settings ---- */
+[data-screen="store"] .store-grid {
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 8px;
+}
+
+[data-screen="store"] .store-grid .card,
+[data-screen="store"] .card {
+  min-height: 0;
+  padding: 10px;
+  gap: 6px;
+}
+
+[data-screen="store"] .item-art {
+  min-height: 68px;
+}
+
+[data-screen="codex"] .codex-grid {
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+[data-screen="codex"] .codex-card {
+  padding: 8px;
+  gap: 5px;
+}
+
+[data-screen="codex"] .codex-card .codex-art {
+  height: 52px;
+}
+
+[data-screen="missions"] .mission-list {
+  gap: 6px;
+}
+
+[data-screen="missions"] .mission {
+  padding: 8px 12px;
+  gap: 4px 12px;
+}
+
+[data-screen="missions"] .mission-groups {
+  gap: 14px;
+}
+
+[data-screen="settings"] .setting-row {
+  min-height: 46px;
+  padding: 8px 0;
+}
+
+[data-screen="settings"] .settings-columns {
+  gap: 14px;
+}
+
+/* ---------- D. 844×390：loadout / career 再压一档（目标 ≤ 4 屏） ----------
+   这两个屏在小屏下条目最多：loadout = 武器2 + 配件4 + 消耗品4 + 投掷物4 + 皮肤 N；
+   career = 概览 + 9 项统计 + 成就 N + 战报 N。 */
+@media (max-height: 500px) and (max-width: 1000px) {
+  [data-screen="loadout"] .screen-head,
+  [data-screen="career"] .screen-head {
+    display: flex;
+    align-items: baseline;
+    gap: 2px 10px;
+  }
+
+  [data-screen="loadout"] .screen-head > div > .eyebrow,
+  [data-screen="career"] .screen-head > div > .eyebrow {
+    display: none;
+  }
+
+  [data-screen="loadout"] .screen-head .title-lg,
+  [data-screen="career"] .screen-head .title-lg {
+    font-size: 20px;
+  }
+
+  [data-screen="loadout"] .screen-head .muted,
+  [data-screen="career"] .screen-head .muted {
+    display: none;
+  }
+
+  [data-screen="loadout"] .screen-body,
+  [data-screen="career"] .screen-body {
+    gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  [data-screen="loadout"] .screen-main-content,
+  [data-screen="career"] .screen-main-content,
+  [data-screen="loadout"] .stack-lg,
+  [data-screen="career"] .stack-lg {
+    gap: 8px;
+  }
+
+  [data-screen="loadout"] .panel-head,
+  [data-screen="career"] .panel-head {
+    min-height: 30px;
+    padding: 4px 10px;
+  }
+
+  [data-screen="loadout"] .panel-body,
+  [data-screen="career"] .panel-body {
+    padding: 7px 10px 8px;
+    gap: 6px;
+  }
+
+  /* loadout：武器槽并排两列，配件 4 列一行 */
+  [data-screen="loadout"] .weapon-slots {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  [data-screen="loadout"] .weapon-slot {
+    min-height: 50px;
+    padding: 5px 9px;
+    gap: 7px;
+  }
+
+  [data-screen="loadout"] .weapon-slot .slot-art {
+    width: 34px;
+    height: 24px;
+  }
+
+  [data-screen="loadout"] .attachment-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  [data-screen="loadout"] .slot.slot-sm {
+    min-height: 40px;
+    padding: 4px 7px;
+  }
+
+  [data-screen="loadout"] .field-help {
+    display: none;
+  }
+
+  [data-screen="loadout"] .chip {
+    height: 26px;
+    min-height: 26px;
+    padding: 0 9px;
+    font-size: 10px;
+  }
+
+  [data-screen="loadout"] .chip small {
+    display: none;
+  }
+
+  [data-screen="loadout"] .skin-grid {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 5px;
+  }
+
+  [data-screen="loadout"] .skin-card .skin-art {
+    height: 38px;
+  }
+
+  /* career：统计 5 列、成就 3 列紧凑、战报 2 条 */
+  [data-screen="career"] .career-head {
+    padding: 8px 12px;
+    gap: 10px;
+  }
+
+  [data-screen="career"] .career-head .level-ring {
+    width: 48px;
+    height: 48px;
+    font-size: 12px;
+  }
+
+  [data-screen="career"] .career-name {
+    font-size: var(--fs-md);
+  }
+
+  [data-screen="career"] .stat-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  [data-screen="career"] .stat-grid .stat {
+    padding: 4px 6px;
+  }
+
+  [data-screen="career"] .stat-grid .stat b {
+    font-size: 13px;
+  }
+
+  [data-screen="career"] .stat-grid .stat small {
+    font-size: 8px;
+  }
+
+  [data-screen="career"] .ach-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 5px;
+  }
+
+  [data-screen="career"] .ach-card {
+    padding: 5px 8px;
+    gap: 6px;
+  }
+
+  [data-screen="career"] .ach-card small {
+    display: none;
+  }
+
+  [data-screen="career"] .match-history .list-row {
+    min-height: 34px;
+    padding: 4px 8px;
+  }
+}
+
+/* ==========================================================================
+   43 · uiux 最终 DOM 契约补齐（覆盖 JS 侧兜底注入）
+   --------------------------------------------------------------------------
+   对应 client/ui-screens.js 的 #ui-screen-styles / #ui-touch-targets，
+   与 client/ui-hud.js 的 #hud-event-styles。补齐后 uiux 可删除三处注入。
+   选择器特异性 ≥ 注入规则，保证 style.css 胜出（style 标签晚插入但无 !important，
+   这里用 ID/双类提升特异性，避免依赖顺序）。
+   ========================================================================== */
+
+/* ---------- A. 局外：列表行 / 商店卡 / 图鉴 / 战报 ---------- */
+.pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(7, 23, 24, 0.72);
+  color: var(--text-mid);
+  text-align: left;
+  transition: border-color var(--dur-2), background-color var(--dur-2);
+}
+
+.pick-row:hover,
+.pick-row:focus-visible {
+  border-color: var(--line-accent);
+  background: rgba(20, 60, 56, 0.72);
+}
+
+.pick-row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pick-row.active,
+.pick-row[aria-selected="true"] {
+  border-color: var(--line-accent);
+  background: rgba(111, 224, 200, 0.1);
+}
+
+.pick-row .pick-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pick-row .pick-main b {
+  color: var(--text-hi);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick-row .pick-main small {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+
+.pick-row .pick-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.store-card {
+  min-width: 0;
+}
+
+.store-card .item-art {
+  min-height: 96px;
+}
+
+.codex-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(3, 11, 12, 0.42);
+}
+
+.region-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.region-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(151, 214, 199, 0.1);
+}
+
+.region-row b {
+  flex: 0 0 auto;
+  color: var(--text-hi);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.region-row small {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.region-row:last-child {
+  border-bottom: 0;
+}
+
+.match-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 46px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--text-lo);
+  font-size: var(--fs-xs);
+}
+
+.match-row:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.match-row b,
+.match-row .match-place {
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.match-row.win {
+  border-left: 2px solid var(--c-amber-500);
+  background: rgba(245, 180, 69, 0.07);
+}
+
+/* 弹窗底部操作行（覆盖注入的 .online-actions 等） */
+.online-actions,
+.room-actions,
+.result-actions,
+.pause-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.online-actions .btn,
+.room-actions .btn,
+.pause-actions .btn {
+  flex: 1 1 160px;
+}
+
+.result-actions {
+  justify-content: center;
+}
+
+.result-actions .btn {
+  flex: 0 1 180px;
+}
+
+/* ==========================================================================
+   结算弹窗（#result-dialog）内容量大时的布局。
+   uiux 在 modal-body 里塞了：排名 + 标题 + 统计格 + 经验面板 + 段位说明
+   + 任务/成就进度列表 + 奖励行 + 标签行 + 操作按钮。
+   820px 内容挤在 654px 的 body 里，按钮被推到屏幕外——所以这里做三件事：
+   ① 内容区自己滚（不靠整个 card 滚），② 操作行粘底永远可见，
+   ③ 新增的 ui-result-* 三个面板补样式（之前完全无样式，纯裸 div）。
+   ========================================================================== */
+
+#result-dialog .modal-card {
+  max-height: min(100%, 100svh);
+  overflow: hidden;
+}
+
+#result-dialog .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3, 12px);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 粘底按钮会盖住最后一行内容，给底部留出按钮高度的空白 */
+  padding-bottom: 66px;
+}
+
+/* 操作行：粘在 body 底部，滚动时始终可见 */
+#result-dialog .result-actions {
+  position: sticky;
+  bottom: -66px;
+  z-index: 3;
+  margin: 0 -1px -66px;
+  padding: 10px 14px 14px;
+  background: linear-gradient(to top, #0b1a22 72%, rgba(11, 26, 34, 0.92) 88%, transparent);
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+
+#result-dialog .result-actions .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 220px;
+  min-height: 46px;
+  white-space: nowrap;
+}
+
+/* 经验面板 */
+.ui-result-xp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: var(--fs-sm, 13px);
+  color: var(--text-mid, #c3d3d6);
+}
+
+/* 头行：等级 LV.1 | spacer | 90 / 117 EXP —— 三个元素必须有间距，
+   否则「LV.1」和「90 / 117 EXP」会首尾相接连成「LV.190」这种假数字。 */
+.ui-result-xp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.ui-result-xp-head > .muted:first-child {
+  flex: 0 0 auto;
+  opacity: 0.72;
+}
+
+.ui-result-xp-head > b {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-result-xp-head > .spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.ui-result-xp-head > span:last-child {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+/* 进度轨（uiux 用 .ui-xp-track 而不是 .xp-bar） */
+.ui-result-xp .ui-xp-track,
+.ui-result-xp .xp-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.ui-result-xp .ui-xp-track > i,
+.ui-result-xp .xp-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent, #6fe0c8), var(--accent-2, #9ad8ff));
+  transition: width 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ui-result-xp .ui-xp-track > i.ui-xp-glow {
+  box-shadow: 0 0 12px rgba(111, 224, 200, 0.75);
+}
+
+.ui-result-xp #result-xp-hint {
+  display: block;
+  font-size: var(--fs-xs, 12px);
+  line-height: 1.5;
+  color: var(--text-lo, #8fa6ab);
+}
+
+/* 段位分说明行 */
+.ui-result-rank-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: var(--fs-sm, 13px);
+  color: var(--text-mid, #c3d3d6);
+}
+
+.ui-result-rank-note .pos { color: var(--ok, #6ce0a8); }
+.ui-result-rank-note .neg { color: var(--danger, #ff7a7a); }
+
+/* 任务/成就进度列表 */
+.ui-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ui-result-list > * {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.5;
+}
+
+.ui-result-list .pos { color: var(--ok, #6ce0a8); }
+.ui-result-list .gold { color: var(--gold, #f2c667); }
+
+/* 窄屏 / 矮屏：再压一档，保证按钮不被挤走 */
+@media (max-height: 500px), (max-width: 760px) {
+  #result-dialog .modal-body { gap: 8px; }
+  #result-dialog .result-actions { padding: 8px 0 2px; }
+  #result-dialog .result-actions .btn { min-height: 42px; }
+  .ui-result-list { max-height: 88px; }
+  #result-dialog .result-stats { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* ---------- B. 局内：聊天 ---------- */
+#hud-chat {
+  position: absolute;
+  left: calc(var(--safe-l) + var(--hud-pad) + calc(4 * var(--hud-u)));
+  bottom: calc(var(--safe-b) + var(--hud-pad) + calc(196 * var(--hud-u)));
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(34vw, 300px);
+  pointer-events: none;
+}
+
+#hud-chat .chat-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  border-left: 2px solid rgba(111, 224, 200, 0.45);
+  border-radius: 2px;
+  background: rgba(4, 15, 16, 0.55);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: var(--text-mid);
+  font-size: calc(10 * var(--hud-u));
+  line-height: 1.4;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+
+#hud-chat .chat-line.in {
+  opacity: 1;
+  transform: none;
+}
+
+#hud-chat .chat-line.fade {
+  opacity: 0;
+}
+
+#hud-chat .chat-line.team {
+  border-left-color: var(--c-teal-400);
+}
+
+#hud-chat .chat-line.all {
+  border-left-color: var(--c-amber-500);
+}
+
+#hud-chat .chat-scope {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: calc(8 * var(--hud-u));
+  letter-spacing: 0.06em;
+}
+
+#hud-chat .chat-name {
+  color: var(--c-teal-300);
+  font-weight: 700;
+}
+
+#hud-chat .chat-text {
+  color: var(--text-mid);
+  word-break: break-word;
+}
+
+/* ---------- C. 局内：受击方向环 ---------- */
+#hud-damage-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 4;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+#hud-damage-ring .dmg-arc {
+  position: absolute;
+  left: calc(-110 * var(--hud-u));
+  top: calc(-110 * var(--hud-u));
+  width: calc(220 * var(--hud-u));
+  height: calc(220 * var(--hud-u));
+  border-radius: 50%;
+  transform-origin: 50% 50%;
+  background: conic-gradient(from -14deg, rgba(255, 92, 92, 0.8), transparent 30deg);
+  mask-image: radial-gradient(closest-side, transparent 56%, #000 58%, #000 80%, transparent 82%);
+  -webkit-mask-image: radial-gradient(closest-side, transparent 56%, #000 58%, #000 80%, transparent 82%);
+  animation: dmgArcFade 900ms var(--ease-out) forwards;
+  will-change: opacity;
+}
+
+#hud-damage-ring .dmg-arc.heavy {
+  background: conic-gradient(from -22deg, rgba(255, 92, 92, 1), transparent 44deg);
+}
+
+@keyframes dmgArcFade {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 受击暗角（.hurt 为瞬时变体） */
+.damage-vignette.hurt,
+#damage-vignette.hurt {
+  opacity: 1 !important;
+  transition: opacity 150ms var(--ease-out);
+}
+
+/* 闪光弹白幕 */
+#hud-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- D. 局内：准星刻线（位置由 JS 依 spread 驱动） ---------- */
+#crosshair .cross-line {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 9px;
+  margin: 0;
+  border-radius: 1px;
+  background: rgba(233, 251, 244, 0.92);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  transform: translate(-50%, -50%);
+  transition: transform 90ms linear, height 90ms linear, background-color 120ms linear;
+}
+
+#crosshair.wide .cross-line {
+  height: 12px;
+  background: rgba(255, 214, 138, 0.95);
+}
+
+#crosshair.tight .cross-line {
+  height: 7px;
+  background: rgba(255, 255, 255, 0.98);
+}
+
+#crosshair .cross-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border: 1px solid rgba(233, 251, 244, 0.28);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: width 90ms linear, height 90ms linear;
+}
+
+#crosshair.wide .cross-ring {
+  border-color: rgba(255, 214, 138, 0.4);
+}
+
+/* 命中标记（复用 #hitmarker） */
+#hitmarker.hud-hitmarker,
+.hud-hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 6;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* ---------- E. 触屏命中区 ≥44px（覆盖 #ui-touch-targets） ---------- */
+@media (pointer: coarse) {
+  .screen .chip,
+  .screen .btn-sm,
+  .screen .tab,
+  .screen .icon-btn,
+  .screen .toggle,
+  .screen .segmented > button {
+    min-height: 44px;
+  }
+
+  .screen .chip {
+    height: auto;
+    padding-block: 10px;
+  }
+
+  .screen .btn-xs {
+    min-height: 40px;
+  }
+
+  .screen .segmented > button,
+  .screen .icon-btn,
+  .screen .chip {
+    position: relative;
+  }
+
+  /* .tab 已有 min-height:44px，无需伪元素扩展；
+     否则会覆盖 .tab::after 的下划线（width/height/background 冲突）。 */
+  .screen .tab {
+    position: relative;
+  }
+
+  .screen .segmented > button::after,
+  .screen .icon-btn::after,
+  .screen .chip::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+    background: transparent;
+  }
+}
+
+/* 小屏下这些命中区扩展不要影响紧凑布局（视觉高度保持） */
+@media (max-height: 500px) and (max-width: 1000px) {
+  .screen[data-screen="play"] .chip,
+  .screen[data-screen="play"] .segmented > button {
+    min-height: 30px;
+    padding-block: 0;
+  }
+}
+
+/* 640×360 极窄横屏：store 需 ≤4 屏（原 1214/303=4.01），提升到 3 列并再压一档 */
+@media (max-height: 380px) and (max-width: 700px) {
+  [data-screen="store"] .screen-head .eyebrow {
+    display: none;
+  }
+
+  [data-screen="store"] .screen-head .title-lg {
+    font-size: 18px;
+  }
+
+  [data-screen="store"] .screen-head .muted {
+    display: none;
+  }
+
+  [data-screen="store"] .store-body {
+    gap: 6px;
+  }
+
+  [data-screen="store"] .store-tabs {
+    padding-bottom: 0;
+  }
+
+  [data-screen="store"] .store-tabs .tab {
+    min-height: 32px;
+    padding: 0 10px;
+    font-size: 10px;
+  }
+
+  [data-screen="store"] .store-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  [data-screen="store"] .store-grid .card,
+  [data-screen="store"] .store-card {
+    padding: 6px;
+    gap: 4px;
+  }
+
+  [data-screen="store"] .item-art {
+    min-height: 46px;
+  }
+
+  [data-screen="store"] .item-art svg {
+    width: 28px;
+    height: 28px;
+  }
+
+  [data-screen="store"] .item-name {
+    font-size: 10px;
+  }
+
+  [data-screen="store"] .item-desc {
+    display: none;
+  }
+
+  [data-screen="store"] .card-foot,
+  [data-screen="store"] .item-foot {
+    padding-top: 2px;
+  }
+
+  [data-screen="store"] .price {
+    font-size: 10px;
+  }
+
+  [data-screen="store"] .btn-sm {
+    min-height: 26px;
+    padding: 0 8px;
+    font-size: 9px;
+  }
+}
+
+/* ==========================================================================
+   44 · 修补：标签页下划线在 flex 容器里被压成竖条
+   --------------------------------------------------------------------------
+   .tab::after 原用 left/right + scaleX 做下划线；当 .tab 处于
+   display:flex 且未设 width 时，::after 的 left/right 会退化为 0 宽。
+   这里改用显式 width + left:50% 居中，避免依赖左右定位。
+   ========================================================================== */
+.tabs,
+.tab-row,
+.store-tabs,
+.codex-tabs,
+.help-tabs {
+  align-items: stretch;
+}
+
+.tab,
+.store-tabs > button,
+.codex-tabs > button {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.tab::after,
+.store-tabs > button::after,
+.codex-tabs > button::after {
+  left: 50%;
+  right: auto;
+  bottom: 0;
+  width: calc(100% - 2 * var(--sp-3));
+  transform: translateX(-50%) scaleX(0);
+  transform-origin: 50% 100%;
+  background: var(--c-teal-400);
+  box-shadow: 0 0 12px rgba(111, 224, 200, 0.7);
+}
+
+.tab.active::after,
+.tab[aria-selected="true"]::after,
+.store-tabs > button.active::after,
+.codex-tabs > button.active::after {
+  transform: translateX(-50%) scaleX(1);
+}
+
+/* 小屏标签页：下划线更短、间距更紧 */
+@media (max-height: 500px) and (max-width: 1000px) {
+  .tab,
+  .store-tabs > button,
+  .codex-tabs > button {
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: var(--fs-2xs);
+  }
+
+  .tab::after,
+  .store-tabs > button::after,
+  .codex-tabs > button::after {
+    width: calc(100% - 16px);
+    height: 2px;
+  }
+}
+
+/* ── 结算面板：赛季通行证 / 武器精通 ─────────────────────────────────── */
+.result-season,
+.result-mastery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.result-season:empty,
+.result-mastery:empty {
+  display: none;
+}
+
+.badge-season {
+  background: rgba(120, 160, 255, 0.16);
+  border-color: rgba(120, 160, 255, 0.45);
+  color: #b9ccff;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   局内 HUD：关闭 backdrop-filter
+   ─────────────────────────────────────────────────────────────────────────────
+   实测（Chromium 141 / ANGLE-D3D11，1280×720）：
+     对局中同时可见的 backdrop-filter 元素 17 个，关闭后帧率提升
+       balanced/DPR1  46.5 → 53.4 FPS（+15%，dt p95 33.4 → 16.7ms，腰斩）
+       balanced/DPR2  42.9 → 58.3 FPS（+36%）
+       high/DPR1      37.8 → 58.3 FPS（+54%）
+   代价与元素面积不成线性关系 —— blur 是逐合成层的全屏后处理，
+   17 个独立层就是 17 次读回。移动端 WebView 的实现更差（4× CPU 降速模拟下
+   dt p95 达到 133ms）。
+
+   原本的半透明底色 rgba(4,15,16,0.62) 本身已经保证可读性；把 alpha 提到 0.82
+   后视觉上几乎无差别（反而更清晰），但省掉了整条 GPU blur 链路。
+   菜单 / 弹窗 / 结算页的玻璃质感保留（它们不在对局帧里）。
+
+   注意：这条规则必须放在文件末尾，靠同优先级「后出现者胜出」覆盖上面的
+   逐个 .hud-panel / .minimap-wrap 等规则，避免去改 20 多处分散的声明。
+   ───────────────────────────────────────────────────────────────────────────── */
+#hud,
+#hud * {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 触控按钮与面板底色加深，补偿去掉 blur 后可能出现的背景干扰 */
+#hud .hud-panel,
+#hud .hud-map,
+#hud .minimap-wrap,
+#hud .zone-status,
+#hud .hud-stage,
+#hud .hud-weather,
+#hud .touch-btn,
+#hud .throw-btn {
+  background-color: rgba(4, 15, 16, 0.82);
+}
+
+/* 低画质额外关闭 clip-path（它会强制独立合成层） */
+body.quality-low #hud .hud-panel {
+  clip-path: none;
+}
+
+/* ==========================================================================
+   45 · 局内背包弹窗（B 键 / 触屏「背包」按钮）
+   --------------------------------------------------------------------------
+   由 ui-screens 的 showInventory() 构建：复用 .modal 的 role=dialog、焦点陷阱与
+   Esc 关闭，这里只负责内容排版。只读面板，不做拖拽/整理（对局中整理装备不现实）。
+   ========================================================================== */
+.inventory-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.inventory-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.inventory-heading {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+}
+
+.inventory-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(3, 11, 12, 0.4);
+}
+
+.inventory-row.active {
+  border-left-color: var(--c-teal-400);
+  background: rgba(14, 42, 40, 0.55);
+}
+
+.inventory-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.inventory-row-main b {
+  color: var(--text-hi);
+  font-size: var(--fs-sm);
+}
+
+.inventory-ammo {
+  flex: 0 0 auto;
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.inventory-ammo.empty {
+  color: var(--c-red-400, #ff8f7a);
+}
+
+.inventory-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inventory-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.inventory-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(3, 11, 12, 0.36);
+}
+
+.inventory-cell.empty {
+  opacity: 0.45;
+}
+
+.inventory-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-lo);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inventory-count {
+  flex: 0 0 auto;
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.inventory-empty {
+  margin: 0;
+}
+
+@media (max-width: 560px), (max-height: 460px) {
+  .inventory-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inventory-row {
+    padding: 6px 9px;
+  }
+}
+
+/* 小地图 canvas 是「打开战术地图」的另一个入口（触屏无 M 键），
+   用 zoom-in 光标 + 触摸高亮提示它可点。 */
+.minimap-wrap canvas#minimap {
+  cursor: zoom-in;
+  touch-action: manipulation;
+}
+
+/* v1.3.1 · 首屏主行动：把新玩家的第一步从七个功能菜单中明确提出来。 */
+[data-screen="home"] .home-body {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  row-gap: clamp(9px, 1.7vh, 18px);
+}
+
+[data-screen="home"] .home-quick {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  width: min(660px, 100%);
+  max-width: 100%;
+}
+
+[data-screen="home"] .home-quick button {
+  display: inline-flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 68px;
+  padding: 11px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 150ms ease, border-color 150ms ease, filter 150ms ease;
+}
+
+[data-screen="home"] .home-quick button:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.09);
+}
+
+[data-screen="home"] .home-quick button:active {
+  transform: translateY(0);
+}
+
+[data-screen="home"] .home-quick button:focus-visible {
+  outline: 3px solid #f5b445;
+  outline-offset: 3px;
+}
+
+[data-screen="home"] .home-quick-play {
+  flex: 1.15 1 0;
+  border: 1px solid #95f2d6;
+  background: linear-gradient(125deg, #83f2d4 0%, #54c9b7 60%, #30a995 100%);
+  box-shadow: 0 10px 34px rgba(25, 161, 139, 0.26);
+  color: #062626;
+}
+
+[data-screen="home"] .home-quick-play svg {
+  flex: 0 0 auto;
+}
+
+[data-screen="home"] .home-quick-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+[data-screen="home"] .home-quick b {
+  display: block;
+  font-size: clamp(15px, 1.5vw, 19px);
+  font-weight: 800;
+}
+
+[data-screen="home"] .home-quick small,
+[data-screen="home"] .home-quick-custom span {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+[data-screen="home"] .home-quick-custom {
+  flex: 0.8 1 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid rgba(145, 207, 195, 0.43);
+  background: rgba(8, 32, 33, 0.91);
+  color: #e4f9f2;
+}
+
+[data-screen="home"] .home-quick-custom span {
+  color: #9fbcb2;
+}
+
+@media (max-width: 1000px) and (max-height: 500px) {
+  [data-screen="home"] .home-body {
+    row-gap: 5px;
+  }
+  [data-screen="home"] .home-quick {
+    width: min(490px, 100%);
+    gap: 7px;
+  }
+  [data-screen="home"] .home-quick button {
+    min-height: 44px;
+    padding: 5px 10px;
+    gap: 7px;
+  }
+  [data-screen="home"] .home-quick b {
+    font-size: 12px;
+  }
+  [data-screen="home"] .home-quick small,
+  [data-screen="home"] .home-quick-custom span {
+    font-size: 9px;
+  }
+}
+
+@media (max-width: 680px) and (max-height: 400px) {
+  [data-screen="home"] .home-quick button {
+    min-height: 44px;
+  }
+  [data-screen="home"] .home-quick small,
+  [data-screen="home"] .home-quick-custom span {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-screen="home"] .home-quick button {
+    transition: none;
   }
 }

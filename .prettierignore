@@ -1,0 +1,126 @@
+# Prettier 忽略清单
+#
+# 背景：本仓库存量代码是**手写风格**（大量对齐注释、单行 if、紧凑对象字面量）。
+# 全量 Prettier 会改写约 2.8 万行（≈ 源码 1/4），既掩盖 diff 又破坏可读性，
+# 因此采用「只约束新文件」策略：
+#   · 下面列出的都是**当前已存在**的存量文件，保持原样；
+#   · 任何**新增**文件都不在此列表中，会自动被 `npm run format:check` 检查；
+#   · 已经格式化的新文件不要加进来；如果某天决定格式化某个存量文件，
+#     从本列表删除它即可。
+# 依赖与产物（Prettier 默认也忽略 node_modules，这里显式写清）
+node_modules/
+dist/
+artifacts/
+test-results/
+playwright-report/
+coverage/
+# 必须写成 /data/：与 .gitignore 同理，裸 data/ 会连带忽略 shared/data/ 下的源码数据表
+/data/
+android/
+tools/
+scripts/archive/
+
+# ── 存量文件（保持手写风格，不参与 format:check） ────────────────────────────
+# 说明：一次全量格式化会重写约 2.8 万行（源码 1/4），为了不制造一个「无法 review 的
+# 巨型 diff」并保留大量对齐注释，这里先把**当前所有不满足 Prettier 的文件**冻结。
+# 新增文件不要加入本清单；想逐步收敛时，删掉对应行再 `npm run format` 即可。
+# 重新生成清单：
+#   npx prettier --list-different "client/**/*.{js,css,html}" "shared/**/*.mjs" \
+#     "server/**/*.mjs" "scripts/**/*.{mjs,js}" "tests/**/*.mjs" "*.{mjs,json}" ".github/**/*.{yml,yaml}"
+client/audio-music.js
+client/audio-spatial.js
+client/audio.js
+client/feel.js
+client/fx.js
+client/index.html
+client/input.js
+client/killcam.js
+client/main.js
+client/mastery.js
+client/meta.js
+client/models.js
+client/net.js
+client/scene.js
+client/season.js
+client/social.js
+client/stats.js
+client/style.css
+client/telemetry.js
+client/theme.js
+client/ui-feedback.js
+client/ui-hud.js
+client/ui-screens.js
+client/ui-social.js
+playwright.config.mjs
+scripts/a11y-check.mjs
+scripts/ai-bench.mjs
+scripts/analytics-report.mjs
+scripts/analytics-seed.mjs
+scripts/android-e2e.mjs
+scripts/android-native-e2e.mjs
+scripts/android-smoke.mjs
+scripts/audio-check.mjs
+scripts/balance-report.mjs
+scripts/benchmark.mjs
+scripts/build.mjs
+scripts/css-check.mjs
+scripts/css-shots.mjs
+scripts/cta-audit.mjs
+scripts/feel-check.mjs
+scripts/horde-sim.mjs
+scripts/load-test.mjs
+scripts/map-compare-sheet.mjs
+scripts/map-compare.mjs
+scripts/perf-alloc.mjs
+scripts/perf-baseline.mjs
+scripts/perf-compare.mjs
+scripts/soak.mjs
+scripts/ui-check.mjs
+scripts/ux-audit.mjs
+server/actions.mjs
+server/guard.mjs
+server/http.mjs
+server/index.mjs
+server/rooms.mjs
+server/session.mjs
+server/social.mjs
+server/telemetry.mjs
+shared/data/achievements.mjs
+shared/data/bots.mjs
+shared/data/enemies.mjs
+shared/data/items.mjs
+shared/data/loot.mjs
+shared/data/maps.mjs
+shared/data/mastery.mjs
+shared/data/missions.mjs
+shared/data/ranks.mjs
+shared/data/season.mjs
+shared/data/store.mjs
+shared/data/unlocks.mjs
+shared/data/weapons.mjs
+shared/ai.mjs
+shared/horde.mjs
+shared/map.mjs
+shared/progression.mjs
+shared/replay.mjs
+shared/rules.mjs
+shared/simulation.mjs
+shared/telemetry.mjs
+tests/ai.test.mjs
+tests/data.test.mjs
+tests/e2e/game.spec.mjs
+tests/e2e/mobile.spec.mjs
+tests/e2e/squad-actions.spec.mjs
+tests/mastery.test.mjs
+tests/progression.test.mjs
+tests/render-static.test.mjs
+tests/replay.test.mjs
+tests/season.test.mjs
+tests/server-hardening.test.mjs
+tests/server.test.mjs
+tests/simulation.test.mjs
+tests/social.test.mjs
+tests/telemetry.test.mjs
+tests/ui-smoke.mjs
+tests/ui-static.test.mjs
+tests/world.test.mjs

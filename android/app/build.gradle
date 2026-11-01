@@ -1,25 +1,190 @@
+import java.util.Properties
+
 plugins { id 'com.android.application' }
+
+// 版本唯一来源：根目录 package.json。
+//
+// 历史实现这里还有一个 `def pkgVersion = '1.1.0'` 的**兜底字面量**，于是
+// 「唯一真源」实际变成了「两个真源 + 正则解析」：package.json 升到 1.2.0 时
+// 这个字面量还停在 1.1.0，build-android.ps1 的一致性校验因此直接抛错，
+// `npm run android` 完全跑不通。现在删掉兜底：文件缺失或格式不对就立刻失败，
+// 让漂移在构建期暴露，而不是在发布时才发现两处版本号不一样。
+def pkgJson = rootProject.file('../package.json')
+if (!pkgJson.exists()) {
+    throw new GradleException('找不到 package.json：版本号必须以它为唯一来源')
+}
+def pkgVersion = null
+def matcher = (pkgJson.text =~ /"version"\s*:\s*"([^"]+)"/)
+if (matcher.find()) pkgVersion = matcher.group(1)
+if (!pkgVersion || !(pkgVersion ==~ /\d+\.\d+\.\d+/)) {
+    throw new GradleException("package.json 的 version 必须是 X.Y.Z，实际为 ${pkgVersion}")
+}
+
+def versionCodeFor = { String name ->
+    def parts = name.tokenize('.').collect { it.replaceAll(/[^0-9].*$/, '') as int }
+    while (parts.size() < 3) parts << 0
+    // 1.0.0 -> 100（沿用仓库现有编号，升级路径不断档），1.2.3 -> 123。
+    // 约束：minor / patch 必须 < 10；到 1.10.x 时改成 major*10000+minor*100+patch 并同步旧包。
+    if (parts[1] > 9 || parts[2] > 9) {
+        throw new GradleException("versionName ${name} 的 minor/patch 超过 9，需要调整 versionCode 方案")
+    }
+    return parts[0] * 100 + parts[1] * 10 + parts[2]
+}
+
+// 版本唯一来源校验：package.json 是唯一真源，build.gradle 不允许各写各的
+def expectedVersionName = pkgVersion
+def expectedVersionCode = versionCodeFor(pkgVersion as String)
+
+// 签名配置：缺少 keystore.properties 时**不再静默回退**。
+//
+// 历史行为：缺 keystore 时回退 signingConfigs.debug 并只打一行 warning，而
+// scripts/build-android.ps1 随后无条件把 app-release.apk 复制成
+// artifacts/mist-isle-<version>-release.apk —— 文件名与正式包完全一样。
+// 后果：CI/构建机忘配 keystore 时，上传商店会被拒；分发出去则无法覆盖安装
+// （debug 证书与正式证书不同）。现在改为构建期硬失败。
+//
+// 豁免：显式传 -PallowDebugRelease=true 时才允许降级（仅限本机安装验证），
+// 且 verifyReleaseSigning 会继续在日志里警告。
+def allowDebugRelease = project.hasProperty('allowDebugRelease') &&
+        project.property('allowDebugRelease').toString().equalsIgnoreCase('true')
+
+def keystoreProps = new Properties()
+def keystoreFile = rootProject.file('keystore.properties')
+def hasReleaseKeystore = false
+if (keystoreFile.exists()) {
+    keystoreFile.withInputStream { keystoreProps.load(it) }
+    def store = keystoreProps['storeFile'] ?: 'keystore/mist-isle-release.jks'
+    def resolved = rootProject.file(store)
+    hasReleaseKeystore = resolved.exists()
+            && keystoreProps['storePassword'] && keystoreProps['keyAlias'] && keystoreProps['keyPassword']
+    if (hasReleaseKeystore) keystoreProps['storeFile'] = resolved.absolutePath
+}
+if (!hasReleaseKeystore && !allowDebugRelease) {
+    // 配置期只提示；真正的失败由 verifyReleaseSigning 在 release/bundle 任务图里抛出，
+    // 这样 assembleDebug 不受影响（验证壳层不需要 keystore）。
+    logger.info('【MistIsle】未找到有效的 android/keystore.properties：release/bundle 将被拒绝构建。')
+}
+
+/**
+ * release/bundle 签名闸门：缺正式 keystore 时直接失败，而不是产出 debug 签名的「正式包」。
+ *
+ * 挂在 preReleaseBuild 与 bundleRelease 上：只有真正要出 release 产物时才会执行，
+ * assembleDebug 不受影响。错误信息给出三条明确出路（配 keystore / 改用 debug / 显式豁免）。
+ */
+tasks.register('verifyReleaseSigning') {
+    group = 'verification'
+    description = 'release/bundle 必须使用正式 keystore（除非 -PallowDebugRelease=true）'
+    doLast {
+        if (hasReleaseKeystore) return
+        if (allowDebugRelease) {
+            logger.warn('【MistIsle】-PallowDebugRelease=true：release 产物将使用 debug 签名，' +
+                    '仅限本机安装验证，禁止分发或上架。')
+            return
+        }
+        throw new GradleException(
+                '缺少有效的 android/keystore.properties（或其指向的 keystore 文件），已拒绝构建 release/bundle。\n' +
+                '  · 正式出包：按 android/keystore.properties.example 生成并填写 keystore\n' +
+                '  · 本机验证：请改用 assembleDebug（debug 包不需要 keystore）\n' +
+                '  · 明知后果仍要用 debug 签名出 release 包（仅限本机验证）：加 -PallowDebugRelease=true')
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild' || task.name == 'bundleRelease') {
+        task.dependsOn 'verifyReleaseSigning'
+    }
+}
 
 android {
     namespace 'com.mistisle.game'
     compileSdk 36
     buildFeatures { buildConfig true }
+
     defaultConfig {
         applicationId 'com.mistisle.game'
         minSdk 26
         targetSdk 36
-        versionCode 2
-        versionName '0.2.0'
+        versionCode expectedVersionCode
+        versionName expectedVersionName
+        resourceConfigurations += ['zh', 'en']
     }
+
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
+
     buildTypes {
-        release { minifyEnabled false }
+        debug {
+            // debug 与 release 并存：包名不同才能同时装在一台机器上，
+            // 否则本地 debug 包会覆盖掉正式包（且签名不同，覆盖安装直接失败）。
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+            minifyEnabled false
+        }
+        release {
+            // 只有 Java 侧会被 R8 处理：WebView 的 JS/CSS 资源不受影响，
+            // 但 assets 里的 app.js 里有反射式的 window.mistIsle* 桥接，不能动 assets。
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // 缺 keystore 时这里保持 null（产物为未签名），构建会先被 verifyReleaseSigning 拦下；
+            // 只有在显式 -PallowDebugRelease=true 时才降级 debug 签名。
+            signingConfig = hasReleaseKeystore ? signingConfigs.release
+                    : (allowDebugRelease ? signingConfigs.debug : null)
+        }
     }
+
+    packagingOptions {
+        jniLibs { useLegacyPackaging false }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // 构建时打印最终生效的版本与签名来源，便于 CI 排查
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            logger.lifecycle("MistIsle ${variant.name}: versionName=${variant.versionName} " +
+                    "versionCode=${variant.versionCode} signed=${variant.buildType.signingConfig?.name ?: 'none'}")
+        }
+    }
 }
+
+/**
+ * 构建前置校验：Web 产物必须存在。
+ *
+ * `android/app/src/main/assets/` 被 .gitignore 排除（它由 `npm run build` 生成），
+ * 所以干净 clone 后直接 `gradlew assembleRelease` 会**成功**产出一个不含 index.html
+ * 的 APK —— WebView 一加载就是 404 / 白屏，而构建日志里看不出任何异常。
+ * 这里提前拦下，把「忘记 npm run build」变成一条明确的构建错误。
+ */
+tasks.register('verifyWebAssets') {
+    doLast {
+        def required = ['index.html', 'app.js', 'style.css']
+        def missing = required.findAll { !file("src/main/assets/${it}").exists() }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                "缺少 Web 产物：src/main/assets/ 下没有 ${missing.join(', ')}。" +
+                "请先在仓库根目录执行 `npm run build`（或 `npm run android` 会自动构建）。")
+        }
+    }
+}
+tasks.named('preBuild') { dependsOn 'verifyWebAssets' }
 
 dependencies {
     implementation 'androidx.webkit:webkit:1.14.0'
+    // ComponentActivity 提供 OnBackPressedDispatcher（返回键先问页面再决定是否退出）
+    implementation 'androidx.activity:activity:1.11.0'
+    implementation 'androidx.core:core:1.17.0'
 }

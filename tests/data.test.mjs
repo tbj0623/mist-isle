@@ -35,8 +35,10 @@ const mean = (list) => list.reduce((a, b) => a + b, 0) / list.length;
 
 test('武器数量、顺序与类别覆盖符合契约', () => {
   const ids = Object.keys(WEAPONS);
-  assert.equal(ids.length, 18, '必须正好 18 把武器');
-  assert.equal(WEAPON_ORDER.length, 18);
+  // 口径改成「下限 + 一致性」而不是精确数字：内容扩容是常态（1.3.0 从 18 扩到 20），
+  // 写死数字会让每次加枪都必须改测试，反而掩盖真正该守的约束（顺序一致、类别齐全）。
+  assert.ok(ids.length >= 18, `武器至少 18 把，实际 ${ids.length}`);
+  assert.equal(WEAPON_ORDER.length, ids.length, 'WEAPON_ORDER 与 WEAPONS 数量必须一致');
   assert.deepEqual(new Set(WEAPON_ORDER), new Set(ids), 'WEAPON_ORDER 必须与 WEAPONS 一一对应');
   const classes = new Set(ids.map((id) => WEAPONS[id].cls));
   assert.deepEqual([...classes].sort(), [...CLASSES].sort(), '8 个类别都要有武器');
@@ -121,7 +123,8 @@ test('武器池、配件池与弹药表结构正确', () => {
     assert.equal(ammo.id, id);
     assert.ok(ammo.name && ammo.pickup > 0 && ammo.cap > ammo.pickup);
   }
-  assert.equal(Object.keys(ATTACHMENTS).length, 14);
+  // 配件数量同理：下限 + 每个槽位至少 3 件（保证「每槽都有可选空间」这个真正的设计约束）。
+  assert.ok(Object.keys(ATTACHMENTS).length >= 14, `配件至少 14 个，实际 ${Object.keys(ATTACHMENTS).length}`);
   const slots = { optic: 0, muzzle: 0, mag: 0, grip: 0 };
   for (const [id, att] of Object.entries(ATTACHMENTS)) {
     assert.equal(att.id, id);
@@ -131,7 +134,9 @@ test('武器池、配件池与弹药表结构正确', () => {
     assert.ok(Object.keys(att.mods).length >= 1, `${id} 无 mods`);
     for (const value of Object.values(att.mods)) assert.equal(typeof value, 'number');
   }
-  assert.deepEqual(slots, { optic: 4, muzzle: 4, mag: 3, grip: 3 });
+  for (const [slot, count] of Object.entries(slots)) {
+    assert.ok(count >= 3, `${slot} 槽位至少 3 件配件，实际 ${count}`);
+  }
   for (const [bucket, pool] of Object.entries(LOOT_WEAPON_POOL)) {
     assert.ok(pool.length >= 6, `${bucket} 武器池太小`);
     for (const id of pool) assert.ok(WEAPONS[id], `${bucket} 含未知武器 ${id}`);

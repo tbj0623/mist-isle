@@ -1,0 +1,252 @@
+# 雾岛突围 / MIST ISLE — 持续集成
+#
+# 目标：push 到 main 与所有 PR 都要过「构建 + 静态检查 + 单测 + 覆盖率」四道闸门；
+# e2e（Playwright）单列一个 job，失败不阻塞合并但必须留下 trace/截图供排查。
+#
+# 设计要点：
+#   · matrix 跑 Node 22（engines 下限）与 24（当前 LTS 线），两端都要绿。
+#   · GitHub Actions 的 runner 比开发机慢得多，`CI=true` 会让 tests/perf-budget.mjs
+#     把**计时类**断言的预算放宽 3 倍；本地跑仍是 1 倍，断言强度不变。
+#   · 所有 job 都有 timeout-minutes，防止死循环/挂起的服务端进程烧分钟数。
+#   · concurrency 按分支/PR 取消旧 run，快速迭代时不排队积压。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同分支的新 push 取消旧 run；PR 用 PR 编号分组，push 用 ref 分组。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # 统一开启 CI 语义：tests/perf-budget.mjs 据此把计时类断言预算放宽 3 倍
+  CI: 'true'
+
+jobs:
+  quality:
+    name: lint · build · test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 用字符串而不是数字：GitHub 表达式里 matrix.node == 22 的数字比较在
+        # YAML 解析成 number 时仍然成立，但字符串更明确，也避免 setup-node 收到 JSON number。
+        node: ['22', '24']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # npm ci 严格按 package-lock 安装；--ignore-scripts 会打断 esbuild 的二进制安装，不要加。
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (esbuild bundle + Android assets)
+        run: npm run build
+
+      - name: Lint (oxlint)
+        run: npm run lint
+
+      - name: Unit tests (node --test)
+        run: npm test
+
+      # 只有失败时才再跑一遍（双 reporter 产出 junit），避免 211 项测试在每种 Node 上跑两次。
+      # 成功路径本身没有可回看的测试文件，失败路径的 junit 才是真正需要的证据。
+      - name: Unit tests (junit report, failure only)
+        if: failure()
+        run: |
+          mkdir -p test-results
+          node --test --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=test-results/junit.xml \
+            tests/*.test.mjs || true
+        shell: bash
+
+      - name: Upload unit test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-results-node${{ matrix.node }}
+          path: test-results/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # 覆盖率只在 Node 22 上采集一份（lcov 用 Node 内置 V8 数据，无需额外依赖）
+      - name: Coverage
+        if: matrix.node == '22'
+        run: npm run test:coverage
+
+      - name: Upload coverage (lcov)
+        if: matrix.node == '22' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+  e2e:
+    name: e2e (playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # e2e 依赖构建产物，但不必等 matrix 全部结束；单独跑一份保证「可合并」的判断不卡在浏览器上。
+    # 允许失败：CI 不因为 WebGL/软件渲染抖动而红，人工按 artifact 复查。
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # 缓存 Playwright 浏览器（~/.cache/ms-playwright 在 Linux runner 上是标准位置）
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      # --with-deps 安装 chromium 需要的系统库（libnss3、libgbm 等）
+      - name: Install chromium
+        run: npx playwright install --with-deps chromium
+
+      # CI 无 GPU，强制 SwiftShader 软渲染；playwright.config.mjs 已按 WEBGL_SOFTWARE=1 切换启动参数。
+      - name: Run e2e
+        run: npx playwright test
+        env:
+          WEBGL_SOFTWARE: '1'
+          # trace 只在失败时保留，避免产物过大
+          PW_TRACE: '1'
+
+      # 无论成败都上传：trace 只有在失败时才有内容，截图同理
+      - name: Upload e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  android:
+    name: android (assembleDebug + lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 允许失败：Android 壳层的构建受 SDK/AGP 版本波动影响，
+    # 红叉需要人工判断是壳层回归还是上游依赖抖动；但产物必须上传，供下载安装验证。
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Android 构建必须先生成 Web 产物：android/app/src/main/assets/ 被 .gitignore 排除
+      # （由 npm run build 生成）。缺这一步 gradlew 会因为 verifyWebAssets 直接失败 ——
+      # 这正是我们想要的：宁可红灯，也不要产出一个不含 index.html 的「成功」APK。
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets (dist + android assets)
+        run: npm run build
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 缓存 Gradle 依赖与 wrapper 发行包：首次冷构建后才能提速，
+      # key 跟着 wrapper 版本与构建脚本变化，避免用到过期缓存。
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # gradlew 在仓库里是 100644（Windows 开发机提交），Linux runner 上必须补执行位，
+      # 否则 ./gradlew 会报 Permission denied。
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # 不配 keystore：只跑 debug（release 缺 keystore 会被 verifyReleaseSigning 拒绝，
+      # 这是 P0-1 的预期行为）。lintDebug 会检查清单权限、configChanges 拼写等常见坑。
+      - name: Assemble debug
+        working-directory: android
+        run: ./gradlew assembleDebug --console=plain --stacktrace
+
+      - name: Lint debug
+        working-directory: android
+        run: ./gradlew lintDebug --console=plain
+
+      # assembleDebug 之外还显式验证 Web 产物确实进了 APK：
+      # aapt2 dump badging 能同时确认包名、权限与 appCategory。
+      - name: Verify APK contents
+        working-directory: android
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          ls -l "$APK"
+          # assets 缺失时 assembleDebug 会成功但 WebView 只能加载 404 —— 直接断言内部文件存在
+          unzip -l "$APK" | grep -q 'assets/index.html'
+          unzip -l "$APK" | grep -q 'assets/app.js'
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          "$AAPT2" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "uses-permission: name='android.permission.VIBRATE'" /tmp/badging.txt
+          grep -q "application-label:" /tmp/badging.txt
+
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-lint-report
+          path: |
+            android/app/build/reports/lint-results-debug.html
+            android/app/build/reports/lint-results-debug.txt
+          if-no-files-found: ignore
+          retention-days: 14

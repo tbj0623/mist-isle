@@ -1,0 +1,68 @@
+// 雾岛突围 / MIST ISLE — oxlint 配置（oxlint 支持 JSONC，注释合法）
+//
+// 为什么选 oxlint 而不是 ESLint：
+//   · 本仓库是原生 JS + ESM，没有 TypeScript，也不需要 React/Vue 插件生态；
+//   · oxlint 是 Rust 实现，全仓库（约 135 个文件 / 3 万行）扫描约 1–5 秒，可以直接挂在 pre-commit；
+//   · 内置 correctness 规则已覆盖「未定义变量 / 未使用 / 不可达 / debugger / == 误用」这些最关键的项；
+//   · 零配置即可跑，规则集合写在这里，升级不会悄悄改变行为。
+//
+// 规则分级策略：**真实的 bug 一律 error**（CI 红灯），**风格与整洁度用 warn**（不阻塞，逐步清理）。
+// 当前 error 数为 0；warn 约 120 条，主要是「未使用的变量/参数」和几条 unicorn 建议。
+//
+// 环境划分：客户端有 window/document，Node 侧没有；用 overrides 分开，避免把 DOM 全局
+// 误判成未定义（早期不加 overrides 时会报 1710 条假 no-undef）。
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": { "node": true, "es2022": true },
+  "ignorePatterns": [
+    "node_modules/**",
+    "dist/**",
+    "artifacts/**",
+    "test-results/**",
+    "playwright-report/**",
+    "coverage/**",
+    "data/**",
+    "android/**",
+    "tools/**",
+    ".zcode/**",
+    "scripts/archive/**"
+  ],
+  "rules": {
+    // ── error：一定是 bug 或安全隐患，CI 必须拦住 ──────────────────────────
+    "no-undef": "error", // 引用了不存在的变量（拼写错误最常见）
+    "no-unreachable": "error", // return/throw 之后的死代码
+    "no-debugger": "error", // 调试器残留
+    "no-eval": "error", // 动态执行字符串
+    "no-dupe-keys": "error", // 对象字面量重复键（后者会静默覆盖前者）
+    // 只允许 `== null` / `!= null`（同时匹配 null 与 undefined 是惯用写法）；
+    // 其他宽松比较（数字与字符串、0 与 ''）一律报错。
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+
+    // ── warn：整洁度问题，不阻塞合并，分批清理 ─────────────────────────────
+    // _ 前缀用于「签名要求但本实现不使用」的参数与 catch 变量。
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }],
+    "no-unused-expressions": "warn", // a && b() 这类「表达式当语句」的写法
+    "no-constant-condition": "warn" // if (true) / while (1)
+  },
+  "overrides": [
+    {
+      // 浏览器端：允许 DOM/BOM 全局，Node 全局不暴露
+      "files": ["client/**/*.js"],
+      "env": { "browser": true, "node": false },
+      // console 残留：生产代码里只放行 warn/error/info（日志与诊断），
+      // console.log / debug / trace 视为调试残留 → 警告。
+      "rules": { "no-console": ["warn", { "allow": ["warn", "error", "info"] }] }
+    },
+    {
+      // 服务端与共享层：只允许 console.log 作为启动/运维日志（服务端需要写 stdout）
+      "files": ["server/**/*.mjs", "shared/**/*.mjs"],
+      "rules": { "no-console": ["warn", { "allow": ["warn", "error", "info", "log"] }] }
+    },
+    {
+      // 脚本与测试是开发工具，输出到终端是本职工作；同时允许在页面里 eval（探针脚本）
+      "files": ["scripts/**", "tests/**", "playwright.config.mjs"],
+      "env": { "browser": true, "node": true },
+      "rules": { "no-console": "off" }
+    }
+  ]
+}

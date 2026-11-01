@@ -3,7 +3,7 @@
 // 性能约定：文字类每 100ms 刷新、小地图每 120ms 重绘、血条每帧只改 style；
 // 全程 textContent，不拼 innerHTML，不在每帧创建 DOM。
 
-import { RARITY_NAMES, RARITY_COLORS, REVIVE_TIME, BLEEDOUT_TIME } from '../shared/rules.mjs';
+import { RARITY_NAMES, RARITY_COLORS, REVIVE_TIME, BLEEDOUT_TIME, HORDE } from '../shared/rules.mjs';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -115,6 +115,8 @@ const ICONS = {
   car: ['M3.5 15.5l1.6-5.2h13.8l1.6 5.2v3h-2.4', 'M3.5 15.5v3h2.4', 'M8.3 18.5h7.4', 'M6.5 12.5h11', 'M8 18.5a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2zM17 18.5a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2z'],
   wave: ['M3 8.2c2.4 0 2.4-2.6 4.8-2.6s2.4 2.6 4.8 2.6 2.4-2.6 4.8-2.6 2.4 2.6 3.6 2.6', 'M3 13.2c2.4 0 2.4-2.6 4.8-2.6s2.4 2.6 4.8 2.6 2.4-2.6 4.8-2.6 2.4 2.6 3.6 2.6', 'M3 18.2c2.4 0 2.4-2.6 4.8-2.6s2.4 2.6 4.8 2.6 2.4-2.6 4.8-2.6 2.4 2.6 3.6 2.6'],
   base: ['M4 20.5V9l8-5.5L20 9v11.5', 'M4 20.5h16', 'M9.5 20.5v-6h5v6'],
+  // 跳伞：伞盖 + 两条伞绳 + 吊着的人
+  chute: ['M3.2 10.4a8.8 8.8 0 0 1 17.6 0z', 'M7.2 10.4L12 19M16.8 10.4L12 19', 'M12 19a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2z'],
 };
 function icon(name, size = 20) {
   const paths = ICONS[name] || ICONS.ping;
@@ -211,8 +213,12 @@ function buildMinimap(host) {
   canvas.className = 'minimap-canvas';
   canvas.width = 200;
   canvas.height = 200;
-  canvas.setAttribute('aria-label', '小地图');
-  canvas.setAttribute('role', 'img');
+  canvas.setAttribute('aria-label', '小地图 · 打开战术地图');
+  // 小地图本身就是「放大」入口：桌面有 M 键，触屏没有键盘 —— 历史上只有右上角那个
+  // 34px 的放大按钮能开全图，而它调用的 app.ui 从未定义，移动端因此完全够不到全图。
+  canvas.setAttribute('role', 'button');
+  canvas.setAttribute('tabindex', '0');
+  canvas.style.cursor = 'zoom-in';
   const zoom = h('button', 'icon-btn minimap-zoom');
   zoom.id = 'btn-map-zoom';
   zoom.type = 'button';
@@ -221,9 +227,14 @@ function buildMinimap(host) {
   zoom.style.minWidth = '44px';
   zoom.style.minHeight = '44px';
   zoom.append(icon('zoom', 16));
-  zoom.addEventListener('click', () => {
-    if (app?.ui?.showFullMap) app.ui.showFullMap();
-    else emit('fullmap');
+  // 历史 bug：这里只走 app.ui.showFullMap / emit('fullmap')，而 main.js 从未定义
+  // app.ui、也没人订阅 hud:fullmap —— 点按钮完全没反应。现在直接调用本模块导出的
+  // showFullMap（同一个函数，main.js 的 app.ui 只是另一条入口）。
+  const openMap = () => { showFullMap(); };
+  zoom.addEventListener('click', openMap);
+  canvas.addEventListener('click', openMap);
+  canvas.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openMap(); }
   });
   const meta = h('div', 'map-meta');
   const mapName = h('span', 'map-name', '—');
@@ -408,7 +419,13 @@ function buildCenter(host) {
   cross.id = 'crosshair';
   const dot = h('span', 'cross-dot');
   const ring = h('span', 'cross-ring');
-  cross.append(dot, ring);
+  // 4 条可编程刻线：由 spread（弧度）驱动与中心距离，比纯 CSS 固定尺寸更真实
+  const lines = [0, 1, 2, 3].map((i) => {
+    const line = h('i', `cross-line line-${i}`);
+    line.setAttribute('aria-hidden', 'true');
+    return line;
+  });
+  cross.append(dot, ring, ...lines);
   const hit = h('div', 'hitmarker');
   hit.id = 'hitmarker';
   hit.append(h('i'), h('i'), h('i'), h('i'));
@@ -433,6 +450,7 @@ function buildCenter(host) {
   host.append(cross, hit, vignette, dirWrap, revive, interact, reloadPrompt);
   R.crosshair = cross;
   R.crossRing = ring;
+  R.crossLines = lines;
   R.hitmarker = hit;
   R.vignette = vignette;
   R.damageDirs = dirWrap;
@@ -467,12 +485,20 @@ function buildFeed(host) {
   chatInput.maxLength = 80;
   chatInput.placeholder = '按 Enter 发送消息 / 队伍频道';
   chatInput.setAttribute('aria-label', '聊天输入');
+  // 触屏软键盘把回车键标成「发送」，避免玩家在小键盘上找不到发送方式
+  chatInput.setAttribute('enterkeyhint', 'send');
+  chatInput.setAttribute('autocomplete', 'off');
   chatForm.append(chatInput);
   chatForm.addEventListener('submit', event => {
     event.preventDefault();
     const text = chatInput.value.trim().slice(0, 80);
     if (text) {
-      try { app?.sendChat?.(text) ?? app?.net?.send?.({ type: 'chat', text, channel: 'team' }); } catch { /* 忽略 */ }
+      // main.js 的 app.sendChat 负责区分联机/离线：联机上行到服务器，离线写本地系统消息。
+      // 只有 main 完全没提供时才退回裸 socket（历史上离线时这里静默丢弃）。
+      try {
+        const handled = app?.sendChat?.(text);
+        if (!handled) app?.net?.send?.({ type: 'chat', text, channel: 'team' });
+      } catch { /* 忽略 */ }
       chatInput.value = '';
     }
     chat.classList.add('hidden');
@@ -483,6 +509,24 @@ function buildFeed(host) {
   R.banner = banner;
   R.bannerTitle = bannerTitle;
   R.bannerSub = bannerSub;
+  // 空降状态条（仅 skydive）：高度 + 阶段 + 可跳倒计时。放在横幅下方。
+  const deploy = h('div', 'hud-deploy hidden');
+  deploy.id = 'deploy-status';
+  deploy.setAttribute('role', 'status');
+  deploy.setAttribute('aria-live', 'polite');
+  const deployStage = h('span', 'deploy-stage');
+  deployStage.id = 'deploy-stage';
+  const deployAlt = h('span', 'deploy-alt');
+  deployAlt.id = 'deploy-alt';
+  const deployBar = h('div', 'deploy-progress');
+  const deployFill = h('i');
+  deployBar.append(deployFill);
+  deploy.append(deployStage, deployAlt, deployBar);
+  host.append(deploy);
+  R.deploy = deploy;
+  R.deployStage = deployStage;
+  R.deployAlt = deployAlt;
+  R.deployFill = deployFill;
   R.toastBox = toastBox;
   R.chat = chat;
   R.chatLog = chatLog;
@@ -499,9 +543,16 @@ const ACTION_DEFS = [
   { id: 'sprint-action', label: '冲刺', icon: 'run', action: 'sprint', keyHint: 'Shift' },
   { id: 'crouch-action', label: '蹲伏', icon: 'crouch', action: 'crouch', keyHint: 'Ctrl' },
   { id: 'dodge-action', label: '翻滚', icon: 'roll', action: 'dodge', keyHint: 'Space' },
+  // 空降专用：在地面阶段隐藏（由 updateDeploy 控制），只在舱内/伞降时出现。
+  { id: 'jump-action', label: '跳伞', icon: 'chute', action: 'jump', keyHint: 'Space' },
   { id: 'backpack-action', label: '背包', icon: 'bag', action: 'backpack', keyHint: 'B' },
   { id: 'ping-action', label: '标记', icon: 'ping', action: 'ping', keyHint: 'P' },
+  // 触屏没有 Enter 键，聊天面板此前完全够不到（唯一入口是键盘 keydown）。
+  { id: 'chat-action', label: '聊天', icon: 'chat', action: 'chat', keyHint: 'Enter' },
 ];
+
+// 长按阈值：短按 = 扔当前投掷物，长按 = 切到下一个（与帮助面板文案一致）。
+const THROW_HOLD_MS = 420;
 
 function buildTouch(host) {
   const layer = h('div', 'touch-controls');
@@ -549,6 +600,61 @@ function buildTouch(host) {
 }
 
 function bindActionButton(btn, def) {
+  // 「投掷」按钮：短按 = 扔当前选中，长按 = 切换到下一个。
+  // 历史实现是 press() 里先 cycleThrowable(1) 再立刻投掷 —— 手雷 3 / 烟雾 2 时
+  // 点一下扔出去的是烟雾（切到下一个并立即扔），与帮助面板写的语义正好相反。
+  // 因此投掷键必须在**松手**时才发 press，长按期间只切换选择。
+  if (def.action === 'throwable') {
+    let timer = 0;
+    let longPressed = false;
+    const start = event => {
+      event.preventDefault();
+      btn.classList.add('pressed');
+      longPressed = false;
+      timer = setTimeout(() => {
+        longPressed = true;
+        let kind = null;
+        try { kind = app?.input?.cycleThrowable?.(1) || null; } catch { /* 忽略 */ }
+        const name = THROWABLE_DEFS.find(d => d.kind === kind)?.label;
+        hudToastEvent(app, name ? `已切换投掷物 · ${name}` : '已切换投掷物', 1200);
+        if (navigator.vibrate && app?.settings?.haptics !== false) { try { navigator.vibrate(12); } catch { /* 忽略 */ } }
+      }, THROW_HOLD_MS);
+    };
+    const end = () => {
+      btn.classList.remove('pressed');
+      if (timer) { clearTimeout(timer); timer = 0; }
+      if (!longPressed) {
+        try { app?.input?.press?.('throw'); } catch { /* 忽略 */ }
+        if (navigator.vibrate && app?.settings?.haptics !== false) { try { navigator.vibrate(8); } catch { /* 忽略 */ } }
+      }
+    };
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', end);
+    btn.addEventListener('pointercancel', end);
+    btn.addEventListener('pointerleave', end);
+    btn.addEventListener('contextmenu', event => event.preventDefault());
+    return;
+  }
+  // 背包 / 聊天是面板开关，不产生玩法输入（input.js 里没有对应消费者）。
+  if (def.action === 'backpack') {
+    btn.setAttribute('aria-haspopup', 'dialog');
+    btn.addEventListener('click', event => {
+      event.preventDefault();
+      if (!toggleInventoryPanel()) {
+        hudToastEvent(app, '背包暂不可用', 1600);
+      }
+      if (navigator.vibrate && app?.settings?.haptics !== false) { try { navigator.vibrate(8); } catch { /* 忽略 */ } }
+    });
+    return;
+  }
+  if (def.action === 'chat') {
+    btn.setAttribute('aria-haspopup', 'dialog');
+    btn.addEventListener('click', event => {
+      event.preventDefault();
+      openChat();
+    });
+    return;
+  }
   const press = event => {
     event.preventDefault();
     btn.classList.add('pressed');
@@ -628,6 +734,24 @@ function emit(name, detail) {
   try { app?.emit?.(`hud:${name}`, detail); } catch { /* 忽略 */ }
   try { app?.input?.command?.(name); } catch { /* 忽略 */ }
 }
+
+/** 展开聊天输入框并聚焦（触屏「聊天」按钮 / 桌面 Enter 共用）。 */
+function openChat() {
+  if (!R.chat) return;
+  R.chat.classList.remove('hidden');
+  try { R.chatInput?.focus({ preventScroll: true }); } catch { /* 忽略 */ }
+}
+
+/** 背包面板由 ui-screens 提供（showModal + 焦点陷阱 + Esc），这里只做开关。 */
+function isInventoryOpen() {
+  return !!document.getElementById('inventory-dialog')?.classList.contains('open');
+}
+function toggleInventoryPanel() {
+  if (!app?.ui) return false;
+  if (isInventoryOpen()) { app.ui.hideInventory?.(); return false; }
+  app.ui.showInventory?.();
+  return true;
+}
 function useItem(item) {
   try { app?.input?.useItem?.(item); } catch { /* 忽略 */ }
   try { app?.emit?.('input:useItem', item); } catch { /* 忽略 */ }
@@ -663,12 +787,14 @@ function buildExtras(host) {
   const horde = h('div', 'horde-panel hud-panel hidden');
   horde.id = 'horde-panel';
   const hordeHead = h('div', 'horde-head');
-  hordeHead.append(icon('wave', 15), h('b', null, '波次 1 / 10'), h('span', 'spacer'), h('small', 'muted', '准备中'));
+  // 初始文案曾硬编码「波次 1 / 10」「基地 600 / 600」，与 shared/rules.mjs 的
+  // HORDE（20 波 / 基地 800）不符 —— 开局前 100ms 内玩家看到的是错的数字。
+  hordeHead.append(icon('wave', 15), h('b', null, `波次 1 / ${HORDE.waves}`), h('span', 'spacer'), h('small', 'muted', '准备中'));
   const baseTrack = h('div', 'base-track');
   const baseFill = h('i');
   baseTrack.append(baseFill);
   const hordeInfo = h('div', 'horde-info');
-  hordeInfo.append(h('small', 'muted', '基地 600 / 600'), h('small', 'muted', '剩余 0'));
+  hordeInfo.append(h('small', 'muted', `基地 ${HORDE.baseHp} / ${HORDE.baseHp}`), h('small', 'muted', '剩余 0'));
   horde.append(hordeHead, baseTrack, hordeInfo);
   const spectate = h('div', 'spectate-bar hidden');
   spectate.id = 'spectate-bar';
@@ -709,7 +835,9 @@ function buildFullMapModal() {
   head.append(h('div', 'eyebrow', 'TACTICAL MAP'), h('h2', 'modal-title', '战场全图'));
   const body = h('div', 'modal-body fullmap-body');
   const canvas = document.createElement('canvas');
-  canvas.id = 'fullmap-canvas';
+  // 与 ui-screens 的「图鉴 · 地图全图」(#fullmap-canvas) 区分：两个弹窗同屏时
+  // 过去会出现两个同 id 的 canvas，getElementById 只能拿到先出现的那个。
+  canvas.id = 'hud-fullmap-canvas';
   canvas.width = 720;
   canvas.height = 720;
   canvas.className = 'fullmap-canvas';
@@ -819,6 +947,34 @@ export function drawMinimap(canvas, state, me) {
     ctx.strokeStyle = zone.closing ? 'rgba(255,150,90,0.95)' : 'rgba(111,224,200,0.9)';
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(zx, zy, Math.max(3, (zone.r || 0) * scale), 0, Math.PI * 2); ctx.stroke();
+
+    // 缩圈方向指示：人在圈外（红）或正在缩圈（琥珀）时，在自身旁画一枚指向圈心的箭头
+    if (me && Number.isFinite(me.x) && Number.isFinite(me.z)) {
+      const outside = Math.hypot(me.x - (zone.x || 0), me.z - (zone.z || 0)) > (zone.r || 0);
+      if (outside || zone.closing) {
+        const goalX = zone.closing && zone.target ? (zone.target.x ?? zone.x) : zone.x;
+        const goalZ = zone.closing && zone.target ? (zone.target.z ?? zone.z) : zone.z;
+        const [mx, my] = pt(me.x, me.z);
+        const [gx, gy] = pt(goalX, goalZ);
+        const ang = Math.atan2(gy - my, gx - mx);
+        const near = Math.min(22, Math.max(12, Math.hypot(gx - mx, gy - my) * 0.4));
+        ctx.save();
+        ctx.translate(mx + Math.cos(ang) * near, my + Math.sin(ang) * near);
+        ctx.rotate(ang);
+        ctx.fillStyle = outside ? 'rgba(255,92,92,0.95)' : 'rgba(245,180,69,0.92)';
+        ctx.strokeStyle = 'rgba(5,15,16,0.85)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(7, 0);
+        ctx.lineTo(-4, 4.6);
+        ctx.lineTo(-1.6, 0);
+        ctx.lineTo(-4, -4.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
   }
 
   // 标记、空投、载具、队友
@@ -1070,13 +1226,19 @@ function updateTop(state, me, now) {
   const zone = state.zone;
   let zoneLabel = '安全区稳定';
   let danger = false;
-  if (zone) {
+  // 空降阶段不显示圈外警告：玩家在飞机/伞上无法自由移动，圈也还没开始缩
+  // （服务端 _applyZoneDamage 在 deploying 直接 return）。显示「圈外 0 点伤害」
+  // 只会让人以为掉血了。
+  const deploying = state.phase === 'deploying' && me?.deployStage && me.deployStage !== 'ground';
+  if (zone && !deploying) {
     const dist = me ? Math.hypot((me.x || 0) - zone.x, (me.z || 0) - zone.z) : 0;
     const outside = me && dist > (zone.r || 0);
     danger = !!outside;
     if (outside) zoneLabel = `圈外 · 每秒 ${Math.round(zone.damage || 0)} 点伤害`;
     else if (zone.closing) zoneLabel = `安全区收缩中 · ${Math.max(0, Math.ceil(zone.nextIn || 0))}s`;
     else zoneLabel = `安全区稳定 · ${Math.max(0, Math.ceil(zone.nextIn || 0))}s`;
+  } else if (deploying) {
+    zoneLabel = '空降中 · 安全区待开启';
   }
   if (zoneLabel !== last.zone) { last.zone = zoneLabel; setText(R.zoneText, zoneLabel); }
   toggle(R.zone, 'danger', danger);
@@ -1182,7 +1344,10 @@ function updateWeapon(state, me) {
   const reserve = Number(me.reserve ?? 0);
   if (`${ammo}` !== last.ammo) { last.ammo = `${ammo}`; setText(R.ammo, ammo); }
   if (`${reserve}` !== last.reserve) { last.reserve = `${reserve}`; setText(R.reserve, reserve); }
-  toggle(R.ammo, 'low', ammo <= Math.max(1, Math.round((info.magazine || 10) * 0.2)));
+  // 低弹药（琥珀）/ 空弹匣（红色闪烁）警告：20% 弹匣与 0 两档
+  toggle(R.ammo, 'low', ammo > 0 && ammo <= Math.max(1, Math.round((info.magazine || 10) * 0.2)));
+  toggle(R.ammo, 'empty', ammo <= 0);
+  toggle(R.weaponPanel, 'dry', ammo <= 0 && reserve <= 0);
   const reloading = Number(me.reloadTime) > 0;
   toggle(R.reloadWrap, 'active', reloading);
   if (reloading) {
@@ -1274,10 +1439,12 @@ function updateCenter(state, me) {
   const downed = !!me?.downed;
   toggle(R.revive, 'hidden', !downed);
   if (downed) {
-    const total = Number(me.bleedout) || BLEEDOUT_TIME;
-    const pct = clamp(total / (me.bleedoutTotal || BLEEDOUT_TIME), 0, 1);
+    // 倒计时环：剩余 bleedout 占比（同时给出总秒数，避免读成“救援进度”）
+    const remain = Math.max(0, Number(me.bleedout) || BLEEDOUT_TIME);
+    const total = Math.max(remain, Number(me.bleedoutTotal) || BLEEDOUT_TIME);
+    const pct = clamp(remain / total, 0, 1);
     setStyle(R.reviveRing, 'background', `conic-gradient(#ff9a5c ${(pct * 100).toFixed(0)}%, rgba(255,255,255,0.12) 0)`);
-    setText(R.reviveText, `${Math.ceil(total)} 秒后淘汰`);
+    setText(R.reviveText, `倒地 · ${Math.ceil(remain)} 秒后淘汰`);
   }
   const label = me?.interactLabel;
   if (label) {
@@ -1292,14 +1459,25 @@ function updateCenter(state, me) {
   } else {
     toggle(R.interact, 'hidden', true);
   }
-  // 准星扩散
-  const spread = Number(me?.spread ?? me?.accuracy ?? 0);
-  const base = 8;
-  const size = base + clamp(spread * 90, 0, 22) + (me?.state === 'sprint' ? 8 : 0);
-  setStyle(R.crossRing, 'width', `${size.toFixed(0)}px`);
-  setStyle(R.crossRing, 'height', `${size.toFixed(0)}px`);
+  // 准星扩散（契约：me.spread 为当前散布角·弧度；me.accuracy 为相对精度 0.05–1）
+  // 两者量纲不同，绝不能混用：spread 只用于几何张开度，accuracy 只用于视觉等级。
+  const spreadRad = Number(me?.spread) || 0;
+  const spreadPx = clamp(spreadRad * 1400, 6, 46); // 0.005rad→7px，0.03rad→42px
+  const accuracy = Number(me?.accuracy);
+  setStyle(R.crossRing, 'width', `${spreadPx.toFixed(0)}px`);
+  setStyle(R.crossRing, 'height', `${spreadPx.toFixed(0)}px`);
+  // 4 条刻线位移（如果样式表用 .cross-line，这里也一并驱动，缺失就跳过）
+  if (R.crossLines?.length) {
+    const gap = Math.round(spreadPx / 2 + 2);
+    setStyle(R.crossLines[0], 'transform', `translate(-50%, -50%) translate(0, ${-gap}px)`);
+    setStyle(R.crossLines[1], 'transform', `translate(-50%, -50%) translate(0, ${gap}px)`);
+    setStyle(R.crossLines[2], 'transform', `translate(-50%, -50%) translate(${-gap}px, 0)`);
+    setStyle(R.crossLines[3], 'transform', `translate(-50%, -50%) translate(${gap}px, 0)`);
+  }
+  toggle(R.crosshair, 'wide', Number.isFinite(accuracy) && accuracy < 0.4);
+  toggle(R.crosshair, 'tight', Number.isFinite(accuracy) && accuracy > 0.85);
   toggle(R.crosshair, 'downed', downed);
-  toggle(R.crosshair, 'hidden', me?.alive === false);
+  toggle(R.crosshair, 'hidden', me?.alive === false || !!me?.car || me?.state === 'vehicle');
   // 受击方向
   updateDamageDirs(state, me);
 }
@@ -1331,12 +1509,20 @@ function spawnDamageArrow(me) {
 
 // ── 09 · 事件、播报、横幅 ───────────────────────────────────────────────────
 const PHASE_LABEL = { lobby: '等待开始', loading: '战场准备', deploying: '正在空降', playing: '战斗开始', ended: '本局结束' };
+const DEPLOY_STAGE_LABEL = { plane: '舱内待命', freefall: '自由落体', chute: '伞降滑翔', ground: '已落地' };
 function updateBanner(state) {
   if (!R.banner) return;
   const phase = state.phase;
   let title = '';
   let sub = '';
-  if (phase === 'deploying') { title = '空降中'; sub = '选择落点，尽快武装自己'; }
+  if (phase === 'deploying') {
+    // 空降的持续状态交给 #deploy-status（阶段/高度/倒计时）。
+    // 中央横幅**不参与**空降播报：舱门开启改由 doorOpen 事件走 pushBanner()
+    // （带 2 秒停留窗口）。这里曾经用「每帧比较 key + last.doorToast 标记」做一次性
+    // 提示，实测只闪 16–26ms 就消失（下一帧 closeIn 变化 → key 变化 → 标题被置空），
+    // 且 last.doorToast 只在 flight 键消失时才复位，重开一局后完全不再播报。
+    title = ''; sub = '';
+  }
   else if (phase === 'loading') { title = '战场准备'; sub = `已就绪 ${state.loading?.ready ?? 0} / ${state.loading?.total ?? '—'}`; }
   else if (state.horde?.prepTime > 0) { title = `第 ${state.horde.wave} 波`; sub = '准备阶段 · 布置防线'; }
   else if (phase === 'ended' && state.result) {
@@ -1360,8 +1546,35 @@ function updateBanner(state) {
   }
 }
 
-function updateHorde(state) {
-  if (!R.horde) return;
+/** 空降状态条：高度 / 阶段 / 可跳倒计时。instant 模式或已落地时整条隐藏。 */
+function updateDeploy(state, me) {
+  if (!R.deploy) return;
+  const stage = me && me.deployStage;
+  const flying = state.phase === 'deploying' && stage && stage !== 'ground';
+  toggle(R.deploy, 'hidden', !flying);
+  // 跳伞按钮只在「舱内且舱门开」时出现，避免玩家在地面/伞降时误触。
+  if (R.actionButtons && R.actionButtons.jump) {
+    const canJump = !!flying && stage === 'plane' && !!state.flight?.open;
+    toggle(R.actionButtons.jump, 'hidden', !canJump);
+    if (canJump) R.actionButtons.jump.classList.add('ready');
+    else R.actionButtons.jump.classList.remove('ready');
+  }
+  if (!flying) return;
+  const label = DEPLOY_STAGE_LABEL[stage] || '空降中';
+  setText(R.deployStage, label);
+  const y = Math.max(0, Math.round(me.y || 0));
+  let right = `${y} m`;
+  if (stage === 'plane' && state.flight?.open) right = `可跳 · ${Math.max(0, Math.ceil(state.flight.closeIn))}s`;
+  else if (stage === 'plane') right = '舱门关闭中';
+  setText(R.deployAlt, right);
+  if (R.deployFill) {
+    // 进度 = 高度比例（190 → 0），让玩家对「还有多久落地」有直觉
+    const k = Math.max(0, Math.min(1, y / 190));
+    R.deployFill.style.transform = `scaleX(${k.toFixed(3)})`;
+  }
+}
+
+function updateHorde(state) {  if (!R.horde) return;
   const horde = state.horde;
   toggle(R.horde, 'hidden', !horde);
   if (!horde) return;
@@ -1385,11 +1598,28 @@ function processEvents(state) {
     if (event.id <= last.events) continue;
     last.events = Math.max(last.events, event.id ?? 0);
     switch (event.type) {
+      case 'shot': {
+        // 记录「谁最后用什么武器开火」→ kill feed 显示武器名
+        if (event.weapon) { shotWeapon.set(event.player, event.weapon); mapCap(shotWeapon); }
+        // 命中标记：hit 可能是布尔（现行模拟）也可能是目标 id（契约 §3.1），两者都兼容
+        if (event.player === selfId && (!!event.hit || (event.hits || 0) > 0)) {
+          showHitmarker((event.headshots || 0) > 0 || event.headshot === true ? 'headshot' : 'hit');
+        }
+        break;
+      }
+      case 'headshot': {
+        // 要害命中（现行模拟的独立事件）：记录到目标身上，击杀播报据此加要害图标
+        if (event.target) { headshotUntil.set(event.target, performance.now() + 2500); mapCap(headshotUntil); }
+        if (event.player === selfId) showHitmarker('headshot');
+        break;
+      }
       case 'kill':
       case 'down': {
         hudKillfeed(event);
-        if (event.attacker === selfId || event.player === selfId) {
-          showHitmarker(event.type === 'kill' ? 'kill' : 'down');
+        // 现行模拟的击杀者字段是 by；契约写作 attacker —— 两者都认
+        if ((event.attacker ?? event.by) === selfId) {
+          if (event.type === 'kill') hudHit(app, { kind: 'kill', name: event.name });
+          else showHitmarker('down');
         }
         break;
       }
@@ -1402,6 +1632,15 @@ function processEvents(state) {
         break;
       case 'zone':
         pushBanner(`第 ${event.phase} 阶段`, '安全区开始收缩', 2200);
+        break;
+      // 空降：舱门开启/关闭走事件驱动的 pushBanner（带 2 秒停留），
+      // 而不是塞进 updateBanner 的每帧状态比较 —— 后者实测只闪 16–26ms
+      // 且重开一局后不再播报（详见 updateBanner 里的注释）。
+      case 'doorOpen':
+        pushBanner('舱门已开', '按空格离机 · 自己选落点', 2600);
+        break;
+      case 'doorClose':
+        pushBanner('舱门已关', '未跳伞的队员被自动投放', 2200);
         break;
       case 'airdrop':
         pushBanner('空投补给', '地图上已标出落点', 2400);
@@ -1426,6 +1665,24 @@ function processEvents(state) {
 }
 
 let bannerTimer = 0;
+// 客户端事件关联表：现行模拟的 kill 事件只带攻击者 id（by）不带武器名，
+// 这里用最近的 shot/headshot 事件补齐 kill feed 的武器与要害标记。
+const shotWeapon = new Map();
+const headshotUntil = new Map();
+function mapCap(map, cap = 64) {
+  while (map.size > cap) map.delete(map.keys().next().value);
+}
+/** 从快照里按 id 找显示名（players / teammates / 自己兜底）。 */
+function nameOf(id) {
+  if (!id) return '';
+  if (id === app?.selfId) return app?.me?.name || '你';
+  const state = app?.state;
+  const players = state?.players;
+  if (players) { const p = players.find((q) => q.id === id); if (p) return p.name || id; }
+  const mates = state?.teammates;
+  if (mates) { const p = mates.find((q) => q.id === id); if (p) return p.name || id; }
+  return '';
+}
 function pushBanner(title, sub, ms = 2000) {
   if (!R.banner) return;
   setText(R.bannerTitle, title);
@@ -1452,37 +1709,44 @@ function flashExplosion(event) {
   const me = selfPlayer(app?.state);
   if (!me) return;
   const angle = Math.atan2(event.x - (me.x || 0), event.z - (me.z || 0));
-  if (app) { app.hud = app.hud || {}; app.hud.lastDamageAngle = (angle * 180) / Math.PI; }
+  if (app) { app.hud = app.hud || {}; app.hud.lastDamageAngle = 180 - (angle * 180) / Math.PI; }
 }
 
-/** 击杀播报（供 main 直接调用） */
+/** 击杀播报（供 main 直接调用）。行结构：[击杀者 b] [动作] [受害者] [武器] （要害加 .headshot 图标） */
 export function hudKillfeed(event) {
   if (!R.feed || !event) return;
-  const row = h('div', 'killfeed-row');
-  let text = '';
-  let cls = 'killfeed-row';
-  if (event.type === 'revive') {
-    text = `${event.byName || '队友'} 救起了 ${event.name || '一名队友'}`;
-    cls += ' revive';
-  } else if (event.type === 'down') {
-    text = `${event.attackerName || '风暴'} 击倒了 ${event.name || '一名敌人'}`;
-    cls += ' down';
-  } else if (event.type === 'boss') {
-    text = `${event.name || '首领'} 出现`;
-    cls += ' boss';
-  } else {
-    const weapon = event.weapon ? ` · ${event.weapon}` : '';
-    text = `${event.attackerName || '风暴'} 淘汰了 ${event.name || '一名敌人'}${weapon}`;
-    cls += ' kill';
-  }
   const selfId = app?.selfId;
-  if (event.attacker === selfId) cls += ' mine';
-  if (event.player === selfId) cls += ' victim';
-  row.className = cls;
-  row.append(h('span', 'feed-text', text));
+  const row = h('div', 'killfeed-row');
+  if (event.type === 'revive') {
+    row.classList.add('revive');
+    row.append(h('span', 'feed-text',
+      `${event.byName || nameOf(event.by) || '队友'} 救起了 ${event.name || nameOf(event.player) || '一名队友'}`));
+  } else if (event.type === 'boss') {
+    row.classList.add('boss');
+    row.append(h('span', 'feed-text', `${event.name || '首领'} 出现`));
+  } else if (event.type === 'down') {
+    row.classList.add('down');
+    const killer = event.attackerName || nameOf(event.attacker ?? event.by) || '风暴';
+    const victim = event.name || nameOf(event.player) || '一名敌人';
+    row.append(h('b', 'killer', killer), h('span', 'feed-text', '击倒了'), h('span', 'victim', victim));
+    if ((event.attacker ?? event.by) === selfId) row.classList.add('mine');
+    if (event.player === selfId) row.classList.add('you');
+  } else {
+    // kill（含空投等无主击杀 → 风暴）
+    row.classList.add('kill');
+    const killer = event.attackerName || nameOf(event.attacker ?? event.by) || '风暴';
+    const victim = event.name || nameOf(event.player) || '一名敌人';
+    row.append(h('b', 'killer', killer), h('span', 'feed-text', '淘汰了'), h('span', 'victim', victim));
+    const weapon = event.weapon || shotWeapon.get(event.attacker ?? event.by) || '';
+    if (weapon) row.append(h('span', 'weapon', String(weapon).toUpperCase()));
+    // 要害图标：事件自带 headshot 字段（未来服务端）或客户端 headshot 事件关联（现行模拟）
+    if (event.headshot === true || headshotUntil.get(event.player) > performance.now()) row.classList.add('headshot');
+    if ((event.attacker ?? event.by) === selfId) row.classList.add('mine');
+    if (event.player === selfId) row.classList.add('you');
+  }
   R.feed.prepend(row);
   while (R.feed.children.length > 6) R.feed.lastElementChild?.remove();
-  setTimeout(() => { row.classList.add('fade'); setTimeout(() => row.remove(), 400); }, 5200);
+  setTimeout(() => { row.classList.add('out'); setTimeout(() => row.remove(), 400); }, 5200);
 }
 
 /** HUD 内轻提示（区别于全局 toast）。 */
@@ -1568,9 +1832,17 @@ function onKeyDown(event) {
   if (!event.repeat && event.key === 'Enter') {
     if (R.chat && R.chat.classList.contains('hidden')) {
       event.preventDefault();
-      R.chat.classList.remove('hidden');
-      R.chatInput?.focus({ preventScroll: true });
+      openChat();
     }
+  }
+  // B：背包。input.js 的 PULSE_KEYS 早就有 KeyB:'inventory'，但全工程无人消费 ——
+  // 帮助面板承诺的「查看携带物资」因此从来打不开。Esc 关闭由 ui-screens 统一处理
+  // （背包是 #dialog-root 里带 role=dialog 的弹窗，会进 topDialog()）。
+  if (!event.repeat && (event.code === 'KeyB' || event.key === 'b' || event.key === 'B')) {
+    if (isInventoryOpen()) return;
+    event.preventDefault();
+    toggleInventoryPanel();
+    return;
   }
   if (event.key === 'Escape') {
     if (isFullMapOpen()) { event.preventDefault(); hideFullMap(); }
@@ -1582,12 +1854,45 @@ function bindGlobal() {
 }
 
 // ── 11 · 对外 API ───────────────────────────────────────────────────────────
+/**
+ * 事件级 HUD 组件的本地兜底样式（chat / 命中 / 受击方向 / 闪光 / 据点）。
+ * 只作用于本模块自建的节点，不改 style.css（design 所属）；design 补齐同名类后
+ * 这里的规则会被 style.css 的更具体选择器覆盖，无冲突。
+ */
+function injectHudEventStyles() {
+  if (document.getElementById('hud-event-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'hud-event-styles';
+  style.textContent = [
+    '#hud-chat{position:absolute;left:calc(var(--safe-l,0px) + 14px);bottom:calc(var(--safe-b,0px) + 210px);width:min(34vw,300px);display:flex;flex-direction:column;gap:3px;pointer-events:none;z-index:4}',
+    '#hud-chat .chat-line{display:flex;gap:6px;align-items:baseline;padding:3px 8px;border-left:2px solid rgba(111,224,200,.45);border-radius:2px;background:rgba(4,15,16,.55);color:#c2d6cf;font-size:12px;line-height:1.4;opacity:0;transform:translateX(-6px);transition:opacity .2s ease,transform .2s ease}',
+    '#hud-chat .chat-line.in{opacity:1;transform:none}',
+    '#hud-chat .chat-line.fade{opacity:0}',
+    '#hud-chat .chat-scope{color:#64807a;font-family:monospace;font-size:10px}',
+    '#hud-chat .chat-name{color:#6fe0c8;font-weight:700}',
+    '#hud-chat .chat-text{color:#c2d6cf}',
+    '#hud-damage-ring{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none;z-index:4}',
+    '#hud-damage-ring .dmg-arc{position:absolute;left:-90px;top:-90px;width:180px;height:180px;border-radius:50%;transform-origin:50% 50%;background:conic-gradient(from -14deg,rgba(255,92,92,.8),transparent 30deg);mask-image:radial-gradient(closest-side,transparent 56%,#000 58%,#000 80%,transparent 82%);-webkit-mask-image:radial-gradient(closest-side,transparent 56%,#000 58%,#000 80%,transparent 82%);animation:dmgFade .9s ease-out forwards}',
+    '#hud-damage-ring .dmg-arc.heavy{background:conic-gradient(from -22deg,rgba(255,92,92,1),transparent 44deg)}',
+    '.damage-vignette.hurt{opacity:1!important;transition:opacity .15s ease-out}',
+    '#hud-flash{position:absolute;inset:0;z-index:9;background:#fff;opacity:0;pointer-events:none}',
+    /* 准星刻线：位置/长度由 JS 按 spread(弧度) 驱动 */
+    '#crosshair .cross-line{position:absolute;left:50%;top:50%;width:2px;height:9px;margin:0;border-radius:1px;background:rgba(233,251,244,.92);box-shadow:0 0 3px rgba(0,0,0,.9);transform:translate(-50%,-50%);transition:transform 90ms linear}',
+    '#crosshair.wide .cross-line{height:12px;background:rgba(255,214,138,.95)}',
+    '#crosshair.tight .cross-line{height:7px;background:rgba(255,255,255,.98)}',
+    '#crosshair .cross-ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:1px solid rgba(233,251,244,.28);border-radius:50%;transition:width 90ms linear,height 90ms linear}',
+    '@keyframes dmgFade{0%{opacity:0}12%{opacity:1}100%{opacity:0}}',
+  ].join('\n');
+  document.head.append(style);
+}
+
 export function initHud(application) {
   app = application || {};
   if (built) return;
   const host = document.getElementById('hud');
   if (!host) { console.warn('[hud] 缺少 #hud'); return; }
   built = true;
+  injectHudEventStyles();
   host.replaceChildren();
   buildTopBar(host);
   buildMinimap(host);
@@ -1602,7 +1907,9 @@ export function initHud(application) {
   bindGlobal();
   setHudScale(Number(app?.settings?.hudScale) || 1);
   if (app?.settings?.leftHanded) R.touch?.classList.add('left-handed');
-  showHud(false);
+  // 初始隐藏：只加 .hidden（唯一可见性机制），不调 showHud 以免清空外部状态
+  host.classList.add('hidden');
+  visible = false;
   console.info('[hud] 局内界面已就绪');
 }
 
@@ -1610,7 +1917,17 @@ export function showHud(value = true) {
   const host = document.getElementById('hud');
   if (!host) return;
   visible = !!value;
+  // 唯一可见性机制：.hidden class（样式表 #hud.hidden{display:none!important}）。
+  // 不要再写 style.display，否则会出现 class 与 inline style 两条真相。
   host.classList.toggle('hidden', !visible);
+  host.style.removeProperty('display');
+  host.classList.toggle('on', visible);
+  // 局内状态类必须同时挂在 #hud 与 body 上：
+  //   - CSS 里 `#hud.in-match { pointer-events: auto }` 等规则选择的是 #hud；
+  //   - 旧实现只挂 body，导致这些规则**永远不生效** —— #hud 整体 pointer-events:none，
+  //     生命面板/消耗品按钮的点击会穿透到 canvas 变成「开枪」（实测点医疗包会走火）。
+  // body 上的类保留给需要整页联动的样式。
+  host.classList.toggle('in-match', visible);
   document.body.classList.toggle('in-match', visible);
   if (!visible) {
     toggleScoreboard(false);
@@ -1620,7 +1937,8 @@ export function showHud(value = true) {
     last.events = 0;
     resetCache();
   } else {
-    last.events = Math.max(0, Number(app?.state?.events?.[0]?.id || 0) - 1);
+    const firstId = Number(app?.state?.events?.[0]?.id || 0);
+    last.events = Math.max(0, firstId - 1);
   }
 }
 
@@ -1643,6 +1961,8 @@ function resetCache() {
   last.shield = -1; last.stamina = -1; last.squadSig = ''; last.hordeSig = '';
   last.banner = '';
   lastHpSeen = null;
+  shotWeapon.clear();
+  headshotUntil.clear();
   R.squadRows?.forEach(row => row.el.remove());
   R.squadRows?.clear();
 }
@@ -1655,12 +1975,13 @@ export function updateHud(application, state, dt) {
   const host = document.getElementById('hud');
   if (!host) return;
   if (!state) {
-    if (!host.classList.contains('hidden') && !app?.state) showHud(false);
+    // 没有快照时绝不自行改可见性（可见性只由 main.js 的 showHud 决定）
     return;
   }
   if (host.classList.contains('hidden')) {
-    if (app?.mode === 'match' || app?.phase) showHud(true);
-    else return;
+    // HUD 可见性唯一来源：main.js 的 showHud()。这里不再自动“复活”，
+    // 否则结算/退出后残留的 state 会让已隐藏的 HUD 又弹出来（幽灵 HUD）。
+    return;
   }
   const now = performance.now();
   const me = meOf(state);
@@ -1670,6 +1991,7 @@ export function updateHud(application, state, dt) {
   updateSquad(state, me, now);
   updateCenter(state, me);
   updateBanner(state);
+  updateDeploy(state, me);
   updateHorde(state);
   processEvents(state);
   if (now - last.map >= MAP_MS && R.minimap) {
@@ -1696,7 +2018,174 @@ export function hudBanner(title, sub, ms) { pushBanner(title, sub, ms); }
 export function openHudMap() { showFullMap(); }
 export function closeHudMap() { hideFullMap(); }
 
+// ── 12 · main.js 消费的事件级 HUD API（全部容错，不抛异常） ─────────────────
+// 说明：这些是“事件驱动”的一次性反馈（不是每帧刷新），因此不参与节流。
+// 样式类名清单已同步给 design（见交付消息）；此处只保证 DOM 结构稳定可降级。
 
+/** 聊天行：main.js 收到 {type:'chat'} 时调用。 */
+export function hudChat(application, msg) {
+  try {
+    if (application && application !== app && application.state) app = application;
+    if (!msg) return;
+    // 优先复用 buildChat() 建好的 R.chatLog（它在 #hud-chat 容器内）。
+    // 旧实现无条件 `document.getElementById('hud-chat')` 再自建一个 —— 而不带 id 的
+    // 聊天容器也是存在的，于是「建了 R.chatLog 却从不写入、另建一套 DOM 并存」，
+    // 审计 docs/AUDIT-WIRING.md 把这条列为「局内聊天历史区永远空白」。
+    let box = R.chatLog;
+    if (!box || !box.isConnected) {
+      box = document.getElementById('hud-chat');
+      if (!box) {
+        const host = document.getElementById('hud');
+        if (!host) return;
+        box = h('div', 'hud-chat chat-panel');
+        box.id = 'hud-chat';
+        box.setAttribute('aria-live', 'polite');
+        host.append(box);
+      }
+    }
+    const line = h('div', 'chat-line');
+    const team = msg.team != null ? `第 ${Number(msg.team) + 1} 队` : (msg.channel === 'all' ? '全体' : '队伍');
+    const name = h('b', 'chat-name', String(msg.name || '队友'));
+    const text = h('span', 'chat-text', String(msg.text || '').slice(0, 80));
+    line.append(h('span', 'chat-scope', team), name, text);
+    box.append(line);
+    while (box.children.length > 6) box.firstElementChild?.remove();
+    // 同时写进「聊天面板」的历史区（R.chatLog）。面板默认隐藏，但玩家按 Enter
+    // 打开它时应该能看到刚过去的几条消息，而不是一片空白。
+    const log = R.chatLog;
+    if (log && log !== box && log.isConnected) {
+      const row = h('div', 'chat-line');
+      row.append(h('span', 'chat-scope', team), h('b', 'chat-name', String(msg.name || '队友')),
+        h('span', 'chat-text', String(msg.text || '').slice(0, 80)));
+      log.append(row);
+      while (log.children.length > 40) log.firstElementChild?.remove();
+      log.scrollTop = log.scrollHeight;
+    }
+    requestAnimationFrame(() => line.classList.add('in'));
+    setTimeout(() => { line.classList.add('fade'); setTimeout(() => line.remove(), 420); }, 6500);
+  } catch (err) { console.warn('[hud] hudChat', err); }
+}
 
+/** 命中标记：ev.kind ∈ hit|kill|headshot。视觉 only（音效/震动由 main.js 负责）。 */
+export function hudHit(application, ev) {
+  try {
+    if (application && application !== app && application.state) app = application;
+    const kind = ev?.kind || (ev?.kill ? 'kill' : ev?.headshot ? 'headshot' : 'hit');
+    if (!R.hitmarker) {
+      const host = document.getElementById('hud');
+      if (!host) return;
+      R.hitmarker = h('div', 'hitmarker hud-hitmarker');
+      R.hitmarker.id = 'hitmarker';
+      host.append(R.hitmarker);
+    }
+    showHitmarker(kind);
+    // 自己的击杀：屏幕上方短暂吐一条“击杀”横幅，强化反馈
+    if (kind === 'kill') {
+      const name = ev?.name || ev?.targetName || '';
+      hudBanner('击杀', name ? `+1 · ${name}` : '+1', 1100);
+    }
+  } catch (err) { console.warn('[hud] hudHit', err); }
+}
+
+/** 受击方向：ev.from 为指向攻击者的角度（弧度，0=+Z，契约 §3 语义）。
+ *  屏幕扇形从 12 点方向顺时针旋转，而屏幕上方对应世界 -Z，所以屏幕角 = π − from。 */
+export function hudDamage(application, ev) {
+  try {
+    if (application && application !== app && application.state) app = application;
+    const host = document.getElementById('hud');
+    if (!host) return;
+    let ring = R.damageRing;
+    if (!ring) {
+      ring = h('div', 'hud-damage-ring damage-indicators');
+      ring.id = 'hud-damage-ring';
+      host.append(ring);
+      R.damageRing = ring;
+    }
+    const from = Number(ev?.from ?? ev?.angle ?? 0) || 0;
+    const rad = Math.PI - from;
+    const arc = h('i', 'dmg-arc');
+    arc.style.transform = `rotate(${rad.toFixed(3)}rad)`;
+    if (ev?.heavy) arc.classList.add('heavy');
+    ring.append(arc);
+    while (ring.children.length > 5) ring.firstElementChild?.remove();
+    setTimeout(() => arc.remove(), 900);
+    // 屏幕边缘红色 vignette：短促 150ms
+    if (R.vignette) {
+      R.vignette.classList.add('hurt');
+      setTimeout(() => R.vignette?.classList.remove('hurt'), 150);
+    }
+    if (app) { app.hud = app.hud || {}; app.hud.lastDamageAngle = (rad * 180) / Math.PI; }
+  } catch (err) { console.warn('[hud] hudDamage', err); }
+}
+
+/** 闪光弹白屏：seconds 为完全恢复时间（默认 2.6s）。 */
+export function hudFlash(application, seconds) {
+  try {
+    if (application && application !== app && application.state) app = application;
+    const host = document.getElementById('hud');
+    if (!host) return;
+    let veil = R.flash;
+    if (!veil) {
+      veil = h('div', 'hud-flash');
+      veil.id = 'hud-flash';
+      host.append(veil);
+      R.flash = veil;
+    }
+    const duration = Math.max(0.2, Math.min(6, Number(seconds) || 2.6));
+    veil.style.transition = `opacity ${duration}s ease-out`;
+    veil.style.opacity = '1';
+    veil.classList.add('on');
+    // 两帧后开始淡出，确保 transition 生效
+    requestAnimationFrame(() => requestAnimationFrame(() => { veil.style.opacity = '0'; }));
+    setTimeout(() => veil.classList.remove('on'), duration * 1000 + 200);
+  } catch (err) { console.warn('[hud] hudFlash', err); }
+}
+
+/** 缩圈事件：ev = { phase, closing, closingIn, x, z, r }。 */
+export function hudZone(application, ev) {
+  try {
+    if (application && application !== app && application.state) app = application;
+    const phase = Number(ev?.phase ?? 0);
+    const closing = ev?.closing !== false;
+    const title = phase > 0 ? `第 ${phase} 圈` : '风暴';
+    const sub = closing
+      ? (Number.isFinite(ev?.closingIn) ? `安全区正在收缩 · ${Math.max(0, Math.ceil(ev.closingIn))}s` : '安全区正在收缩')
+      : '安全区已稳定';
+    pushBanner(title, sub, 2400);
+    // 驱动态栏文本（若可见）
+    if (R.zoneText) setText(R.zoneText, `${title} · ${closing ? '收缩中' : '稳定'}`);
+    // 正在缩圈时给 zone-pill 一个 closing 态，强化视觉
+    if (R.zone) R.zone.classList.toggle('closing', !!closing);
+    if (R.stagePhase && phase > 0) setText(R.stagePhase, `阶段 ${phase}`);
+  } catch (err) { console.warn('[hud] hudZone', err); }
+}
+
+/** 据点/基地受击（horde 模式）：ev = { hp, maxHp, name }。 */
+export function hudBase(application, ev) {
+  try {
+    if (application && application !== app && application.state) app = application;
+    const hp = Number(ev?.hp);
+    const maxHp = Number(ev?.maxHp) || 600;
+    const name = String(ev?.name || '基地');
+    if (Number.isFinite(hp) && R.horde && R.baseFill) {
+      const pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+      R.horde.classList.remove('hidden');
+      setStyle(R.baseFill, 'width', `${pct.toFixed(1)}%`);
+      if (R.hordeInfo) {
+        clear(R.hordeInfo);
+        R.hordeInfo.append(h('small', 'muted', `${name} ${Math.max(0, Math.ceil(hp))} / ${Math.ceil(maxHp)}`));
+        const lost = maxHp - hp;
+        if (lost > 0) R.hordeInfo.append(h('small', 'danger', `受损 ${Math.ceil(lost)}`));
+      }
+      R.horde.classList.toggle('critical', pct <= 25);
+      if (pct <= 25) pushBanner(`${name}告急`, `结构仅剩 ${Math.round(pct)}%`, 1800);
+      return;
+    }
+    // 无据点 UI：降级为一条 banner
+    if (Number.isFinite(hp)) {
+      pushBanner('据点受击', `${name} ${Math.max(0, Math.ceil(hp))} / ${Math.ceil(maxHp)}`, 1600);
+    }
+  } catch (err) { console.warn('[hud] hudBase', err); }
+}
 
 

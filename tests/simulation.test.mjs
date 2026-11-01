@@ -3,9 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Match, sanitizeInput, emptyInput, effectiveWeapon, MAX_PLAYERS,
-  ATTACHMENTS, WEAPONS, THROWABLES,
+  WEAPONS,
 } from '../shared/simulation.mjs';
-import { TICK_RATE, MAX_LOOT, MOVE, REVIVE_TIME, BLEEDOUT_TIME, REVIVE_HP } from '../shared/rules.mjs';
+import { TICK_RATE, MAX_LOOT, MOVE, REVIVE_TIME, BLEEDOUT_TIME, REVIVE_HP, COMBAT } from '../shared/rules.mjs';
+import { damageAtDistance } from '../shared/data/weapons.mjs';
+import { matchSummaryFromState } from '../shared/progression.mjs';
+import { budget } from './perf-budget.mjs';
 
 const tick = 1 / TICK_RATE;
 const MOVE_DODGE_TIME = MOVE.dodgeTime;
@@ -158,6 +161,117 @@ test('霰弹多弹丸：近距离一枪多颗弹丸命中', () => {
   assert.equal(ev.weapon, 's12');
   assert.ok(ev.hits >= 1);
   assert.ok(t.hp < 100);
+});
+
+// ── 要害（爆头）判定 ─────────────────────────────────────────────────────────
+// 俯视角用「命中点到中轴线的横向偏移 ≤ 命中半径 × headshotCoreRatio」代理要害。
+// 测试几何：射手在 lane 起点、朝 lane 方向，弹道原点在身位前 0.45m；
+// 站立命中半径 0.7 → 核心区 0.266m。把散布最大横向偏移（spread × 距离）压在
+// 核心阈值之内/之外，使「必吃倍率」「必不吃倍率」与随机数流无关。
+
+/** 在开阔地上摆好「射手 → 正前方 D 米处的目标」，返回 { shooter, target, dist }。 */
+function aimRange(m, { D = 6, lateral = 0, weapon = 'ar7' } = {}) {
+  const lane = openLane(m.world, 24);
+  assert.ok(lane, '需要一段开阔地');
+  const p = m.players[0];
+  const t = m.players[1];
+  t.bot = false;
+  p.loadout[0] = { type: weapon, ammo: 30, attachments: [], _eff: null };
+  p.x = lane.x; p.z = lane.z; p.angle = lane.angle;
+  m.cars.forEach((c) => { c.x = 1e6; c.z = 1e6; }); // 载具不能挡在弹道上
+  const sa = Math.sin(lane.angle); const ca = Math.cos(lane.angle);
+  t.x = p.x + sa * D + ca * lateral;
+  t.z = p.z + ca * D - sa * lateral;
+  return { shooter: p, target: t, dist: D - 0.45, weapon: effectiveWeapon(p) };
+}
+
+test('要害命中：核心区伤害 × 武器 headshotMul，事件带要害标记', () => {
+  const m = duel({ bots: 1 });
+  const { shooter, target, dist, weapon } = aimRange(m, { D: 6 });
+  const hp0 = target.hp;
+  m.tryFire(shooter);
+  // AR7 散布 0.026 rad × 5.55m ≈ 0.144m < 核心区 0.266m → 必判要害
+  const expected = damageAtDistance(weapon, dist) * weapon.headshotMul;
+  assert.ok(Math.abs((hp0 - target.hp) - expected) < 1e-9,
+    `要害伤害 ${hp0 - target.hp} 应等于基础 ${damageAtDistance(weapon, dist)} × ${weapon.headshotMul}`);
+  const ev = m.events.filter((e) => e.type === 'shot').pop();
+  assert.equal(ev.hit, true);
+  assert.equal(ev.headshots, 1);
+  const hs = m.events.filter((e) => e.type === 'headshot');
+  assert.equal(hs.length, 1);
+  assert.equal(hs[0].player, shooter.id);
+  assert.equal(hs[0].target, target.id);
+  assert.ok(hs[0].damage > 0);
+});
+
+test('边缘命中：命中身体但偏离核心区，不吃要害倍率', () => {
+  const m = duel({ bots: 1 });
+  const { shooter, target, dist, weapon } = aimRange(m, { D: 6, lateral: 0.48 });
+  const hp0 = target.hp;
+  m.tryFire(shooter);
+  // 横向偏移 0.48m：加/减散布极值 0.144m 后仍落在 (0.266, 0.7) → 必命中且必非要害
+  const expected = damageAtDistance(weapon, dist);
+  assert.ok(Math.abs((hp0 - target.hp) - expected) < 1e-9,
+    `边缘伤害 ${hp0 - target.hp} 应等于基础 ${expected}（无倍率）`);
+  const ev = m.events.filter((e) => e.type === 'shot').pop();
+  assert.equal(ev.hit, true);
+  assert.equal(ev.headshots, 0);
+  assert.equal(m.events.some((e) => e.type === 'headshot'), false);
+});
+
+test('霰弹：多弹丸命中但**不参与**要害判定（避免贴脸单发秒杀）', () => {
+  // 设计变更（1.2.1）：霰弹的每颗弹丸不再判要害。
+  //
+  // 原因：headshotCoreRatio = 0.38 让命中圆中心 14% 面积判要害，而霰弹在 ≤8m 时
+  // 散布锥小于这个核心区 —— 9 颗弹丸几乎全部判要害（实测 3m 时 9.0/9），
+  // 单发伤害 99 × 1.5 ≈ 148.5，对无甲目标 3m/5m **100% 单发秒杀**、8m 93%，
+  // 与设计注释「贴脸 2 发必杀」差了一倍。
+  //
+  // 现在霰弹只吃基础伤害（贴脸 99，刚好不秒 100 血），仍然保留多弹丸命中与距离衰减。
+  const m = duel({ bots: 1 });
+  const { shooter, target } = aimRange(m, { D: 12, weapon: 's12' });
+  const hp0 = target.hp;
+  m.tryFire(shooter);
+  const ev = m.events.filter((e) => e.type === 'shot').pop();
+  assert.equal(ev.weapon, 's12');
+  assert.ok(ev.hits >= 2, `多颗弹丸命中（hits=${ev.hits}）`);
+  assert.equal(ev.headshots, 0, `霰弹弹丸不应判要害（headshots=${ev.headshots}）`);
+  assert.equal(m.events.filter((e) => e.type === 'headshot').length, 0, '不应产生 headshot 事件');
+  assert.ok(target.hp < hp0, '仍应造成伤害');
+});
+
+test('倒地目标：要害倍率与 downedDamageMul 乘算叠加', () => {
+  const m = new Match({ seed: 31, mode: 'squad', maxPlayers: 8, duration: 600 });
+  m.addPlayer('a', 'Alpha', { team: 0 });
+  m.addPlayer('b', 'Bravo', { team: 0 });
+  m.addPlayer('e1', 'Enemy1', { team: 1 });
+  m.addPlayer('e2', 'Enemy2', { team: 1 });
+  m.start();
+  m.players.length = 4; // a, b, e1, e2；队友活着保证 e1 可倒地
+  const a = m.players[0];
+  const e1 = m.players[2];
+  const e2 = m.players[3];
+  const lane = openLane(m.world, 24);
+  assert.ok(lane, '需要一段开阔地');
+  a.loadout[0] = { type: 'p9', ammo: 5, attachments: [], _eff: null };
+  a.x = lane.x; a.z = lane.z; a.angle = lane.angle;
+  m.cars.forEach((c) => { c.x = 1e6; c.z = 1e6; });
+  const D = 6;
+  e1.x = a.x + Math.sin(lane.angle) * D;
+  e1.z = a.z + Math.cos(lane.angle) * D;
+  e2.x = 1e5; e2.z = 1e5;
+  m.damage(e1, 130, a.id, {});
+  assert.equal(e1.downed, true);
+  // 倒地命中半径 0.5 → 核心区 0.19m；P9 散布 0.030 × 5.55 ≈ 0.167m → 必判要害
+  const weapon = effectiveWeapon(a);
+  const dist = D - 0.45;
+  const expected = damageAtDistance(weapon, dist) * weapon.headshotMul * COMBAT.downedDamageMul;
+  const downedHp0 = e1.downedHp;
+  m.tryFire(a);
+  assert.ok(Math.abs((downedHp0 - e1.downedHp) - expected) < 1e-9,
+    `倒地要害 ${downedHp0 - e1.downedHp} 应等于基础 × ${weapon.headshotMul} × ${COMBAT.downedDamageMul}`);
+  assert.equal(m.events.filter((e) => e.type === 'shot').pop().headshots, 1);
+  assert.ok(m.events.some((e) => e.type === 'headshot' && e.target === e1.id));
 });
 
 test('后坐与散布：连续射击后 spreadBloom 上升', () => {
@@ -761,19 +875,21 @@ test('horde：波次推进、基地受击、升级与清关', () => {
   assert.equal(m.start(), true);
   assert.equal(m.phase, 'live');
   assert.ok(m.hordeRun);
-  assert.equal(m.hordeRun.base.maxHp, 600);
-  assert.equal(m.hordeRun.base.hp, 600);
+  assert.equal(m.hordeRun.base.maxHp, 800);
+  assert.equal(m.hordeRun.base.hp, 800);
   let snap = m.snapshot('a', 0);
   assert.ok(snap.horde, 'horde snapshot present');
-  assert.equal(snap.horde.baseMaxHp, 600);
-  assert.equal(snap.horde.totalWaves, 10);
+  assert.equal(snap.horde.baseMaxHp, 800);
+  assert.equal(snap.horde.totalWaves, 20);
   assert.equal(snap.horde.wave, 0);
   assert.ok(snap.horde.cost > 0);
+  assert.equal(snap.horde.upgrades.length, 10, '10 种升级都要在快照里');
   // 准备期结束 → 第 1 波
   step(m, Math.ceil(15 / tick) + 2);
   assert.equal(m.hordeRun.wave, 1);
   assert.ok(m.hordeRun.enemies.length > 0);
-  assert.equal(m.hordeRun.enemies.length, 6 + 3 * 0);
+  assert.equal(m.hordeRun.enemies.length, 6, '第 1 波：6 只爬行者');
+  assert.ok(m.hordeRun.enemies.every((e) => e.type === 'crawler'));
   // 敌人会推进并打基地
   m.players.forEach((p) => { p.x = 1e6; p.z = 1e6; });
   const baseHp0 = m.hordeRun.base.hp;
@@ -786,7 +902,7 @@ test('horde：波次推进、基地受击、升级与清关', () => {
   assert.ok(m.hordeRun.nextWaveIn > 0);
   // 升级：修复基地
   m.hordeRun.base.hp = 200;
-  m.hordeRun.credits = 1000;
+  m.hordeRun.credits = 4000;
   assert.equal(m.upgradeCost('repair'), 120);
   assert.equal(m._buy(m.players[0], 'repair'), true);
   assert.ok(m.hordeRun.base.hp > 200);
@@ -795,6 +911,15 @@ test('horde：波次推进、基地受击、升级与清关', () => {
   assert.equal(m._buy(m.players[0], 'armor'), true);
   assert.equal(m._buy(m.players[0], 'turret'), true);
   assert.equal(m.hordeRun.base.turrets, 1);
+  assert.equal(m.hordeRun.turrets.length, 1);
+  // 新增 6 种升级都能买成功
+  for (const kind of ['barricade', 'medstation', 'airstrike', 'slowfield', 'weaponcache', 'overcharge']) {
+    assert.equal(m._buy(m.players[0], kind), true, `${kind} 应该能买`);
+  }
+  assert.equal(m.hordeRun.barricades.length, 1);
+  assert.equal(m.hordeRun.medstations, 1);
+  assert.equal(m.hordeRun.slowfields, 1);
+  assert.equal(m.hordeRun.overcharge, true);
 });
 
 test('horde：基地被摧毁立即结束，玩家阵亡 8 秒后在基地复活', () => {
@@ -826,8 +951,8 @@ test('性能：64 玩家 600 tick 低于 8 秒', () => {
   for (let i = 0; i < 600; i++) m.update(tick);
   const ms = performance.now() - t0;
   const perTick = ms / 600;
-  assert.ok(ms < 8000, `600 ticks took ${ms.toFixed(0)}ms`);
-  assert.ok(perTick < 6, `avg ${perTick.toFixed(2)}ms/tick exceeds 6ms budget`);
+  assert.ok(ms < budget(8000), `600 ticks took ${ms.toFixed(0)}ms`);
+  assert.ok(perTick < (budget(6000) / 1000), `avg ${perTick.toFixed(2)}ms/tick exceeds ${(budget(6000) / 1000).toFixed(1)}ms budget`);
   const snap = m.snapshot('p0', 0);
   assert.ok(snap.players.length <= MAX_PLAYERS + 4);
 });
@@ -868,4 +993,321 @@ test('断线重连：disconnect 后输入被清空，reconnect 恢复', () => {
   assert.equal(m.reconnect('a'), true);
   assert.equal(p.connected, true);
   assert.equal(m.input('ghost', { fire: true }), false);
+});
+
+// ── 性能优化回归：loot 压实与快照基座复用（协议输出与逐份重建完全一致） ──────────
+test('loot 压实：taken 条目被剔除，其余条目 id 与相对顺序稳定', () => {
+  const m = duel({ bots: 0 });
+  const before = m.loot.map((l) => l.id);
+  assert.ok(before.length >= 4, '测试前置：地图应有足够物资');
+  m.loot[1].taken = true;
+  m.loot[3].taken = true;
+  step(m, 55); // 跨过 50 tick 压实点
+  const after = m.loot.map((l) => l.id);
+  const expected = before.filter((id) => id !== before[1] && id !== before[3]);
+  assert.deepEqual(after, expected, '压实后剩余条目应保持原相对顺序');
+  const snap = m.snapshot('a', 0);
+  const snapIds = new Set(snap.loot.map((l) => l.id));
+  assert.ok(!snapIds.has(before[1]) && !snapIds.has(before[3]), '压实后快照不再包含被剔除 id');
+});
+
+test('MAX_LOOT 生成额度以本局累计生成数为准：压实不腾出新生成额度', () => {
+  const m = duel({ bots: 0 });
+  while (m.addLoot('consumable', 'bandage', 0, 0, { qty: 1 })) { /* 填满本局生成额度 */ }
+  assert.equal(m.lootId, MAX_LOOT, '累计生成数应正好达到上限');
+  m.loot[0].taken = true;
+  m.loot[7].taken = true;
+  step(m, 55);
+  assert.equal(m.loot.length, MAX_LOOT - 2, '压实应剔除 2 条 taken 条目');
+  assert.equal(m.addLoot('consumable', 'bandage', 0, 0, { qty: 1 }), null,
+    '压实后不得产生新生成额度（空投补货行为与压实前完全一致）');
+});
+
+test('快照基座复用：同 tick 两次快照字节一致，tick 推进后基座刷新', () => {
+  const m = duel({ bots: 1 });
+  m.players[1].x = 4; m.players[1].z = 4; // 敌人放进 70m 可视圈
+  const a1 = JSON.stringify(m.snapshot('a', 0));
+  const a2 = JSON.stringify(m.snapshot('a', 0));
+  assert.equal(a1, a2, '同 tick 内重复快照输出必须逐字节一致');
+  assert.ok(JSON.stringify(m.snapshot(null, 0)).length > 0, '观战快照可用');
+  const t1 = m.time;
+  step(m, 1);
+  const a3 = JSON.parse(JSON.stringify(m.snapshot('a', 0)));
+  assert.ok(a3.time > t1, 'tick 推进后快照 time 应刷新（基座随之重建）');
+});
+
+// ── 降落区投票（dropHints）：开局前小队选落点 ─────────────────────────────────
+test('降落区投票：有票队的人类落在距 hint 最近的锚点，bot 与无票队走默认锚点', () => {
+  const m = new Match({ seed: 991, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('h', 'Hero', { bot: false, team: 0 });
+  m.addPlayer('b', 'Bot', { bot: true, team: 0 });
+  m.addPlayer('x', 'Xeno', { bot: false, team: 1 });
+  const anchors = m.world.spawnAnchors;
+  const R = m.world.radius;
+  const legacy = anchors[0]; // team0 人类默认锚点（team*3）
+  let target = null;
+  let best = -1;
+  for (const a of anchors) {
+    const d = Math.hypot(a.x - legacy.x, a.z - legacy.z);
+    const d1 = Math.hypot(a.x - anchors[3].x, a.z - anchors[3].z);
+    if (d > best && d1 > 40) { best = d; target = a; }
+  }
+  assert.ok(best > 60, '测试前置：hint 锚点应远离默认锚点');
+  const hint = { x: target.x / (2 * R) + 0.5, z: target.z / (2 * R) + 0.5 };
+  assert.equal(m.start({ dropHints: { 0: hint } }), true);
+  const h = m.players.find((p) => p.id === 'h');
+  const bot = m.players.find((p) => p.id === 'b');
+  const xeno = m.players.find((p) => p.id === 'x');
+  assert.ok(Math.hypot(h.x - target.x, h.z - target.z) < 6,
+    `有票队人类应贴近 hint 锚点（${Math.hypot(h.x - target.x, h.z - target.z).toFixed(1)}m）`);
+  assert.ok(Math.hypot(bot.x - anchors[1].x, bot.z - anchors[1].z) < 5, 'bot 不受 hint 影响（team*3+1）');
+  assert.ok(Math.hypot(xeno.x - anchors[3].x, xeno.z - anchors[3].z) < 5, '无票队人类仍走默认锚点（team*3）');
+});
+
+test('降落区缺省：start() 不带 dropHints 时出生路径与 hint 字段保持原样', () => {
+  const m = new Match({ seed: 992, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('h', 'Hero', { bot: false, team: 0 });
+  assert.equal(m.start(), true);
+  assert.equal(m.dropHints, null);
+  const anchors = m.world.spawnAnchors;
+  const h = m.players[0];
+  assert.ok(Math.hypot(h.x - anchors[0].x, h.z - anchors[0].z) < 6, '无 hint 的人类仍落在默认锚点');
+  // 非法 dropHints（team 键不是非负整数）整体忽略，且不改变出生序列
+  const m2 = new Match({ seed: 992, mode: 'squad', maxPlayers: 8 });
+  m2.addPlayer('h', 'Hero', { bot: false, team: 0 });
+  assert.equal(m2.start({ dropHints: { x: 0.5, z: 0.5 } }), true);
+  assert.equal(m2.dropHints, null);
+  assert.equal(m2.players[0].x, h.x);
+  assert.equal(m2.players[0].z, h.z);
+});
+
+test('降落区 hint：坐标 clamp 到 0-1、同种子同 hint 出生一致、同队人类在锚点附近散开', () => {
+  const a = new Match({ seed: 993, mode: 'squad', maxPlayers: 8 });
+  a.addPlayer('h', 'Hero', { bot: false, team: 0 });
+  a.start({ dropHints: { 0: { x: 5, z: -7 } } });
+  assert.deepEqual(a.dropHints, { 0: { x: 1, z: 0 } }, '越界坐标应 clamp 进 0-1');
+  const b = new Match({ seed: 993, mode: 'squad', maxPlayers: 8 });
+  b.addPlayer('h', 'Hero', { bot: false, team: 0 });
+  b.start({ dropHints: { 0: { x: 1, z: 0 } } });
+  assert.equal(a.players[0].x, b.players[0].x);
+  assert.equal(a.players[0].z, b.players[0].z);
+  // 同队两名人类：都贴近 hint 锚点，且保持明显间距（环位展开）
+  const c = new Match({ seed: 994, mode: 'squad', maxPlayers: 8 });
+  const anchors = c.world.spawnAnchors;
+  const R = c.world.radius;
+  const t = anchors[10];
+  c.addPlayer('p1', 'P1', { bot: false, team: 0 });
+  c.addPlayer('p2', 'P2', { bot: false, team: 0 });
+  c.start({ dropHints: { 0: { x: t.x / (2 * R) + 0.5, z: t.z / (2 * R) + 0.5 } } });
+  const [q1, q2] = c.players;
+  assert.ok(Math.hypot(q1.x - t.x, q1.z - t.z) < 6 && Math.hypot(q2.x - t.x, q2.z - t.z) < 6,
+    '同队两人都应贴近 hint 锚点');
+  const sep = Math.hypot(q1.x - q2.x, q1.z - q2.z);
+  assert.ok(sep > 2, `同队人类不应重叠（间距 ${sep.toFixed(2)}m）`);
+});
+
+// ── 回归：v1.2 修复的模拟层缺陷 ───────────────────────────────────────────────
+test('事件 id 恒为数字，实体 id 走 entityId（否则快照窗口按 > 比较会丢弃整类事件）', () => {
+  const m = new Match({ seed: 501, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('a', 'A', { bot: false, team: 0 });
+  m.addPlayer('b', 'B', { bot: false, team: 1 });
+  m.start();
+  for (let i = 0; i < 30; i++) m.update(1 / 30);
+  // 制造带实体 id 的事件（投掷物爆炸）
+  const p = m.players[0];
+  p.x = m.players[1].x + 1;
+  p.z = m.players[1].z;
+  p.grenades = 1;
+  m.input('a', { throwable: true, aim: 0, seq: 1 });
+  for (let i = 0; i < 120; i++) m.update(1 / 30);
+  assert.ok(m.events.length > 0);
+  for (const ev of m.events) {
+    assert.equal(typeof ev.id, 'number', `事件 ${ev.type} 的 id 必须是数字，实际 ${typeof ev.id}`);
+  }
+  // 带实体 id 的事件应改名为 entityId，且仍能被 sinceEventId 窗口正确取到
+  const withEntity = m.events.filter((e) => e.entityId !== undefined);
+  if (withEntity.length) {
+    const cut = withEntity[withEntity.length - 1].id - 1;
+    const win = m.snapshot('a', cut).events.map((e) => e.id);
+    assert.ok(win.every((id) => id > cut), '快照窗口必须按数字 id 正确过滤');
+  }
+});
+
+test('载具只在真正撞人/撞墙时掉血，正常行驶不掉耐久', () => {
+  const m = new Match({ seed: 502, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('drv', 'D', { bot: false, team: 0 });
+  m.start();
+  const car = m.cars[0];
+  const p = m.players[0];
+  p.x = car.x; p.z = car.z;
+  assert.ok(m._enterCar(p, car), '应能上车');
+  assert.equal(car.driver, p.id);
+  // 找一条前方 40m 无遮挡的朝向，避免测试本身撞墙
+  let openAngle = null;
+  for (let k = 0; k < 32 && openAngle == null; k++) {
+    const a = (k / 32) * Math.PI * 2;
+    const dx = Math.sin(a), dz = Math.cos(a);
+    if (m.world.wallDistance(car.x, car.z, dx, dz, 40) >= 38) openAngle = a;
+  }
+  assert.ok(openAngle != null, '地图上应能找到一段开阔直道');
+  car.angle = openAngle;
+  const hp0 = car.hp;
+  for (let i = 0; i < 30; i++) {
+    m.input('drv', { mz: 1, seq: i + 1 });
+    m.update(1 / 30);
+  }
+  // 正常行驶（不含撞墙）不得掉耐久；撞墙允许小额损耗，但单次不超过 12 点
+  assert.ok(car.hp >= hp0 - 13, `正常行驶不应大幅掉耐久：${hp0} → ${car.hp}`);
+});
+
+test('载具爆炸不会对同一乘员结算两次伤害', () => {
+  const m = new Match({ seed: 503, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('r1', 'R1', { bot: false, team: 0 });
+  m.addPlayer('r2', 'R2', { bot: false, team: 0 });
+  m.start();
+  const car = m.cars[0];
+  const [a, b] = m.players;
+  a.x = car.x; a.z = car.z; b.x = car.x; b.z = car.z;
+  m._enterCar(a, car);
+  m._enterCar(b, car);
+  const before = { a: a.hp + a.shield + a.armor, b: b.hp + b.shield + b.armor };
+  m._explodeCar(car, null);
+  const after = { a: a.hp + a.shield + a.armor, b: b.hp + b.shield + b.armor };
+  // 只吃一次 55（不是 55 + 70）
+  assert.ok(before.a - after.a <= 56, `乘员只应受一次爆炸伤害，实际 ${(before.a - after.a).toFixed(1)}`);
+  assert.ok(before.b - after.b <= 56, `乘员只应受一次爆炸伤害，实际 ${(before.b - after.b).toFixed(1)}`);
+});
+
+test('大厅阶段移除玩家不会误判团灭结束比赛', () => {
+  const m = new Match({ seed: 504, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('x', 'X', { bot: false, team: 0 });
+  m.addPlayer('y', 'Y', { bot: false, team: 0 });
+  assert.equal(m.phase, 'waiting');
+  m.removePlayer('x');
+  assert.equal(m.phase, 'waiting', '等待阶段移除玩家不应结束比赛');
+  assert.equal(m.start(), true, '移除后仍应能正常开局');
+});
+
+test('水面试为减速地形（inWater 别名接到 isWater）', () => {
+  const m = new Match({ seed: 505, mode: 'squad', maxPlayers: 8 });
+  assert.equal(typeof m.world.inWater, 'function');
+  const src = String(m.world.inWater);
+  assert.ok(!/=>\s*false/.test(src), 'inWater 不应是恒 false 的空实现');
+});
+
+test('结算摘要使用模拟层权威统计，而不是只依赖事件窗口', () => {
+  const m = new Match({ seed: 506, mode: 'squad', maxPlayers: 16 });
+  m.addPlayer('me', '我', { bot: false, team: 0 });
+  for (let i = 1; i < 16; i++) m.addPlayer('b' + i, 'B' + i, { bot: true, team: (i / 4) | 0 });
+  m.start();
+  for (let t = 0; t < 300; t++) {
+    m.input('me', { mx: Math.sin(t / 30), mz: Math.cos(t / 30), fire: t % 3 === 0, seq: t + 1 });
+    m.update(1 / 30);
+  }
+  assert.ok(m.players[0].stats.shotsFired > 0, '模拟层应累计开火数');
+  const snap = m.snapshot('me', snapEventIdOf(m));
+  assert.ok(snap.me.stats && snap.me.stats.shotsFired > 0, '快照应下发权威统计');
+  const summary = matchSummaryFromState(snap, 'me', { mode: 'squad', mapId: 'qinglan' });
+  assert.equal(summary.shotsFired, m.players[0].stats.shotsFired, '摘要应直接采用权威统计');
+});
+
+// 结算时事件窗口为空（sinceEventId 已消费到最新）—— 这正是旧实现所有字段为 0 的原因
+function snapEventIdOf(m) { return m.eventId; }
+
+// ── 回归：装备形状（对象 vs 数组）──────────────────────────────────────────
+// 历史 bug：客户端 normalizeLoadout() 返回对象 {primary, secondary, attachments...}，
+// 而 _applyLoadout 只认数组，静默回退成 [{type:'p9'}, null] —— 所有对局开局
+// 都只有 P9 手枪、无配件、无消耗品、无投掷物，「装备」界面完全无效。
+test('装备：对象形状（客户端存档）被正确应用', () => {
+  const m = new Match({ seed: 601, mode: 'training', maxPlayers: 4 });
+  m.addPlayer('me', '我', {
+    team: 0,
+    loadout: {
+      primary: 'ar7', secondary: 'p9',
+      attachments: { primary: ['red_dot'], secondary: [] },
+      throwable: 'frag', consumable: 'medkit', skin: 'skin_default',
+    },
+  });
+  m.start();
+  const p = m.players[0];
+  assert.equal(p.loadout[0]?.type, 'ar7', '主武器应来自存档');
+  assert.deepEqual(p.loadout[0]?.attachments, ['red_dot'], '主武器配件应保留');
+  assert.equal(p.loadout[1]?.type, 'p9', '副武器应来自存档');
+  assert.ok(p.grenades > 0, '应发放选定投掷物');
+  assert.ok(p.meds > 0, '应发放选定消耗品');
+  assert.equal(p.skin, 'skin_default', '皮肤应被记录');
+});
+
+test('装备：数组形状（服务端/测试）仍然可用', () => {
+  const m = new Match({ seed: 602, mode: 'training', maxPlayers: 4 });
+  m.addPlayer('me', '我', { team: 0, loadout: [{ type: 'ak12', attachments: ['scope2'] }, { type: 'p226' }] });
+  m.start();
+  const p = m.players[0];
+  assert.equal(p.loadout[0]?.type, 'ak12');
+  assert.equal(p.loadout[1]?.type, 'p226');
+});
+
+test('装备：两把都无效时仍给保底手枪，不会开局空手', () => {
+  const m = new Match({ seed: 603, mode: 'training', maxPlayers: 4 });
+  m.addPlayer('me', '我', { team: 0, loadout: { primary: 'nonexistent', secondary: 'also_bad' } });
+  m.start();
+  const p = m.players[0];
+  assert.ok(p.loadout[0] || p.loadout[1], '必须至少有一把武器');
+});
+
+test('装备：不同投掷物/消耗品映射到各自的计数器', () => {
+  const cases = [
+    { throwable: 'smoke', consumable: 'bandage', check: (p) => [p.smokes, p.bandages] },
+    { throwable: 'flash', consumable: 'shield', check: (p) => [p.flashes, p.shields] },
+    { throwable: 'molotov', consumable: 'energy', check: (p) => [p.molotovs, p.energy] },
+  ];
+  for (const c of cases) {
+    const m = new Match({ seed: 604, mode: 'training', maxPlayers: 4 });
+    m.addPlayer('me', '我', { team: 0, loadout: { primary: 'ar7', throwable: c.throwable, consumable: c.consumable } });
+    m.start();
+    const [throwCount, useCount] = c.check(m.players[0]);
+    assert.ok(throwCount > 0, `${c.throwable} 应发放到对应计数器，实际 ${throwCount}`);
+    assert.ok(useCount > 0, `${c.consumable} 应发放到对应计数器，实际 ${useCount}`);
+  }
+});
+
+// ── 回归：友军伤害口径一致性 ──────────────────────────────────────────────
+// 枪械由 COMBAT.friendlyFire = 0 完全关闭，但面积伤害（手雷）与载具撞击
+// 过去都没有队友判定 —— 一颗雷能把三个队友打成残血，司机打转能把队友撞成重伤。
+// 这是四人小队里最莫名其妙的死法。现在：手雷对队友 30%，载具撞击对队友 0。
+test('友伤：手雷对队友只造成 30% 伤害，对敌人全额', () => {
+  const m = new Match({ seed: 701, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('me', '我', { bot: false, team: 0 });
+  m.addPlayer('mate', '队友', { bot: false, team: 0 });
+  m.addPlayer('foe', '敌人', { bot: false, team: 1 });
+  m.start();
+  const [me, mate, foe] = m.players;
+  // 三人重叠在爆炸中心附近（排除距离衰减差异）
+  me.x = 0; me.z = 0; mate.x = 1; mate.z = 0; foe.x = 1; foe.z = 1;
+  me.shield = 0; me.armor = 0; mate.shield = 0; mate.armor = 0; foe.shield = 0; foe.armor = 0;
+  m._detonate({ id: 'gX', kind: 'frag', x: 0, z: 0, owner: 'me' });
+  assert.ok(mate.hp > foe.hp, `队友(${mate.hp.toFixed(0)}) 应比敌人(${foe.hp.toFixed(0)}) 受伤更少`);
+  // 30% 伤害 ≈ 掉 30 点（实测剩 68.7，差额来自距离衰减与爆炸中心偏移）
+  assert.ok(mate.hp > 60, `队友受伤应约为 30%，实际剩 ${mate.hp.toFixed(1)}`);
+  assert.ok(mate.hp < 80, `队友受伤不应过轻，实际剩 ${mate.hp.toFixed(1)}`);
+});
+
+test('友伤：载具撞击不会伤害队友', () => {
+  const m = new Match({ seed: 702, mode: 'squad', maxPlayers: 8 });
+  m.addPlayer('drv', '司机', { bot: false, team: 0 });
+  m.addPlayer('mate', '队友', { bot: false, team: 0 });
+  m.start();
+  const [drv, mate] = m.players;
+  const car = m.cars[0];
+  car.driver = drv.id;
+  drv.car = car.id; drv.seat = 0;
+  car.occupants[0] = drv.id;
+  // 队友站在车前
+  car.speed = 12;
+  mate.x = car.x + Math.sin(car.angle) * 1.5;
+  mate.z = car.z + Math.cos(car.angle) * 1.5;
+  const hp0 = mate.hp;
+  car.hitCd = 0;
+  m._driveInput(drv, 1 / 30);
+  assert.equal(mate.hp, hp0, '队友不应被自己人的车撞伤');
 });

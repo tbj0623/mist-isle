@@ -9,62 +9,89 @@ const BASE = {
   sun: { color: 0xfff0d4, intensity: 2.35, position: [70, 150, 55] },
   exposure: 1.08,
   water: { color: 0x6fa6ad, opacity: 0.92, animated: true },
-  ground: { sandRing: 0xd5c193, shore: 0xb9c7ae, detail: 0.5 },
+  ground: { sandRing: 0xd5c193, shore: 0xb9c7ae, detail: 0.5, roughness: 0.86 },
   haze: 0xffffff,
   stars: 0,
+  // 地面雾（低空浓雾带，用半透明平面模拟）+ 远景雾（FogExp2 / Fog）
+  groundMist: { color: 0xffffff, opacity: 0.16, height: 2.4, scale: 1.0 },
+  fogMode: 'linear',
+  fogDensity: 0.0042,
+  // 动态元素
+  motion: { flags: 0.0, water: 0.0, leaves: 0.0, drip: 0.0, windowGlow: 0 },
 };
 
-/** 主题 = maps.mjs theme + 视觉增强参数。 */
+/** 主题 = maps.mjs theme + 视觉增强参数。三张图必须一眼可辨：
+ *  青岚＝湿润青绿 + 灰蓝雾；赤砂＝橙红沙尘 + 暖黄光；白夜＝冷蓝夜 + 月光 + 窗光。 */
 export const THEMES = {
   qinglan: {
     ...BASE,
     id: 'qinglan',
     name: '青岚岛',
-    fogColor: 0xa8c6c2,
-    fogNear: 132, fogFar: 365,
-    ambient: { sky: 0xdceee6, ground: 0x53664f, intensity: 1.4 },
-    sun: { color: 0xfff2d8, intensity: 2.5, position: [86, 165, 62] },
-    exposure: 1.1,
-    water: { color: 0x6ea3ab, opacity: 0.94, animated: true, foam: 0xd7ece6 },
-    ground: { sandRing: 0xd8c69c, shore: 0xa9c0a0, detail: 0.6, grass: 0x7c9e68, grassAlt: 0x8fae74 },
+    fogColor: 0x9dbcbb,
+    fogNear: 92, fogFar: 300,
+    ambient: { sky: 0xd4ece2, ground: 0x445b4a, intensity: 1.42 },
+    sun: { color: 0xfff4dc, intensity: 2.42, position: [86, 165, 62] },
+    exposure: 1.06,
+    water: { color: 0x5f9aa4, opacity: 0.94, animated: true, foam: 0xd7ece6, roughness: 0.16 },
+    ground: { sandRing: 0xd8c69c, shore: 0x9dbc9a, detail: 0.62, grass: 0x6f9660, grassAlt: 0x86a86c, roughness: 0.78 },
     rain: { color: 0xbcd6de, opacity: 0.5 },
-    haze: 0xcfe4e0,
+    haze: 0xc2dcd8,
     birds: true,
     landmarkAccent: 0xefb657,
+    groundMist: { color: 0xd6e8e4, opacity: 0.2, height: 2.2, scale: 1.05 },
+    fogMode: 'linear',
+    motion: { flags: 0.85, water: 1.0, leaves: 0.7, drip: 0.8, windowGlow: 0.15 },
+    // 青岚：湿润 = 低粗糙度高反射（水洼感），整体偏青绿
+    wetness: 0.45,
+    puddle: 0.4,
+    paletteBias: { saturation: 1.04, temperature: -0.06 },
   },
   chisha: {
     ...BASE,
     id: 'chisha',
     name: '赤砂矿区',
-    fogColor: 0xd8a679,
-    fogNear: 96, fogFar: 300,
-    ambient: { sky: 0xf0c79a, ground: 0x6d5334, intensity: 1.18 },
-    sun: { color: 0xffb877, intensity: 2.75, position: [-120, 70, 45] },
-    exposure: 1.16,
-    water: { color: 0xb58a5e, opacity: 0.85, animated: false },
-    ground: { sandRing: 0xcfa878, shore: 0xb99c6c, detail: 0.75, grass: 0xb59a68, grassAlt: 0xa88f5f },
-    dust: { color: 0xd9b184, opacity: 0.55 },
-    haze: 0xf0d0a8,
+    fogColor: 0xdb9a63,
+    fogNear: 58, fogFar: 214,
+    ambient: { sky: 0xffcf9c, ground: 0x6a4a2c, intensity: 1.26 },
+    sun: { color: 0xffb469, intensity: 3.05, position: [-120, 58, 45] },
+    exposure: 1.2,
+    water: { color: 0xa8763f, opacity: 0.8, animated: false, roughness: 0.9 },
+    ground: { sandRing: 0xd6a468, shore: 0xbe9358, detail: 0.82, grass: 0xb08f58, grassAlt: 0xc4a066, roughness: 0.98 },
+    dust: { color: 0xe0b184, opacity: 0.6 },
+    haze: 0xf3cf9c,
     birds: false,
-    landmarkAccent: 0xd97b3f,
+    landmarkAccent: 0xe0803f,
+    groundMist: { color: 0xe8b884, opacity: 0.26, height: 2.8, scale: 1.2 },
+    fogMode: 'linear',
+    motion: { flags: 0.6, water: 0.0, leaves: 0.18, drip: 0.0, windowGlow: 0.0 },
+    wetness: 0.05,
+    puddle: 0.0,
+    paletteBias: { saturation: 1.12, temperature: 0.14 },
   },
   baiye: {
     ...BASE,
     id: 'baiye',
     name: '白夜港',
-    fogColor: 0x35505f,
-    fogNear: 78, fogFar: 280,
-    ambient: { sky: 0x5b7c96, ground: 0x1a2730, intensity: 0.95 },
-    sun: { color: 0x9fc4e8, intensity: 1.15, position: [-90, 120, -70] },
-    exposure: 1.22,
-    water: { color: 0x35505f, opacity: 0.96, animated: false, ice: true, foam: 0xbcd6de },
-    ground: { sandRing: 0xcdd8d5, shore: 0x9fb0ad, detail: 0.4, grass: 0x9fb0ad, grassAlt: 0xb0c0bd },
-    snow: { color: 0xffffff, opacity: 0.85 },
-    night: { ambient: 0x3f5f80, sun: 0x8fb8e0, intensity: 0.8, lamps: true, lampColor: 0xffc978 },
-    haze: 0x2c4152,
-    stars: 0.6,
+    fogColor: 0x2b3f52,
+    fogNear: 64, fogFar: 232,
+    ambient: { sky: 0x4d7396, ground: 0x121c26, intensity: 0.82 },
+    sun: { color: 0xa9c8ec, intensity: 1.32, position: [-90, 120, -70] },
+    exposure: 1.28,
+    water: { color: 0x28414f, opacity: 0.97, animated: true, ice: true, foam: 0xbcd6de, roughness: 0.22 },
+    ground: { sandRing: 0xc8d5d3, shore: 0x8fa3a2, detail: 0.38, grass: 0x8fa3a0, grassAlt: 0xa3b6b2, roughness: 0.62 },
+    snow: { color: 0xffffff, opacity: 0.9 },
+    night: { ambient: 0x35547a, sun: 0x9cc2e8, intensity: 0.92, lamps: true, lampColor: 0xffc978 },
+    haze: 0x22384a,
+    stars: 0.75,
     birds: false,
     landmarkAccent: 0x8fd6e8,
+    groundMist: { color: 0x6d8ea8, opacity: 0.18, height: 2.0, scale: 1.15 },
+    fogMode: 'exp2',
+    fogDensity: 0.0055,
+    motion: { flags: 0.7, water: 0.45, leaves: 0.22, drip: 0.0, windowGlow: 1.0 },
+    wetness: 0.3,
+    puddle: 0.12,
+    paletteBias: { saturation: 0.9, temperature: -0.2 },
   },
 };
 
@@ -101,24 +128,42 @@ export function themeFor(mapId) {
 export function lightingFor(theme, timeOfDay = 'day', weather = 'clear') {
   const out = {
     fogColor: theme.fogColor, fogNear: theme.fogNear, fogFar: theme.fogFar,
+    fogMode: theme.fogMode || 'linear',
+    fogDensity: theme.fogDensity ?? 0.0042,
     ambient: { ...theme.ambient }, sun: { ...theme.sun },
     exposure: theme.exposure, clearColor: theme.fogColor, lamps: false, stars: theme.stars || 0,
-  };  if (timeOfDay === 'dusk' || theme.mapId === 'chisha') {
-    out.fogColor = timeOfDay === 'dusk' ? 0xd49670 : theme.fogColor;
-    out.ambient.sky = 0xefb98a; out.ambient.intensity *= 0.86;
-    out.sun.color = 0xffb173; out.sun.intensity *= 1.12;
-    out.exposure *= 1.03;
+    groundMist: { ...(theme.groundMist || { color: 0xffffff, opacity: 0.16, height: 2.4, scale: 1 }) },
+    motion: { ...(theme.motion || { flags: 0, water: 0, leaves: 0 }) },
+    keyLight: null,
+  };
+  if (timeOfDay === 'dusk' || theme.mapId === 'chisha') {
+    out.fogColor = timeOfDay === 'dusk' ? 0xd88f5c : theme.fogColor;
+    out.ambient.sky = 0xffc491; out.ambient.intensity *= 0.94;
+    out.sun.color = 0xffab5e; out.sun.intensity *= 1.16;
+    out.sun.position = [-120, 58, 45];
+    out.exposure *= 1.05;
+    out.groundMist.color = 0xe6b583; out.groundMist.opacity = Math.max(out.groundMist.opacity, 0.24);
   }
   if (timeOfDay === 'night' || theme.mapId === 'baiye') {
-    const night = theme.night || { ambient: 0x3f5f80, sun: 0x8fb8e0, intensity: 0.8, lamps: true, lampColor: 0xffc978 };
-    out.fogColor = theme.fogColor; out.ambient.sky = night.ambient; out.ambient.intensity = 1.0;
+    const night = theme.night || { ambient: 0x35547a, sun: 0x9cc2e8, intensity: 0.92, lamps: true, lampColor: 0xffc978 };
+    out.fogColor = theme.fogColor; out.ambient.sky = night.ambient; out.ambient.intensity = 0.95;
     out.sun.color = night.sun; out.sun.intensity = night.intensity; out.lamps = night.lamps;
-    out.lampColor = night.lampColor; out.exposure = 1.26;
+    out.lampColor = night.lampColor; out.exposure = 1.3;
+    // 月光方向光（冷色 + 高角度），与暖色路灯形成冷暖对比
+    out.keyLight = { color: 0x9dc0ea, intensity: 0.85, position: [-70, 140, -90] };
+    out.groundMist.color = 0x5f7f9c; out.groundMist.opacity = 0.2;
   }
-  if (weather === 'fog') { out.fogNear *= 0.42; out.fogFar *= 0.62; }
-  else if (weather === 'rain') { out.fogNear *= 0.66; out.fogFar *= 0.8; out.sun.intensity *= 0.72; out.ambient.intensity *= 0.88; }
-  else if (weather === 'sandstorm') { out.fogNear *= 0.5; out.fogFar *= 0.72; out.fogColor = 0xc99a6a; out.sun.intensity *= 0.8; }
-  else if (weather === 'snow') { out.fogNear *= 0.6; out.fogFar *= 0.82; out.sun.intensity *= 0.9; }
+  if (weather === 'fog') { out.fogNear *= 0.42; out.fogFar *= 0.62; out.fogDensity *= 1.5; }
+  else if (weather === 'rain') {
+    out.fogNear *= 0.66; out.fogFar *= 0.8; out.sun.intensity *= 0.72; out.ambient.intensity *= 0.9;
+    out.groundMist.opacity += 0.05; out.fogDensity *= 1.15;
+  } else if (weather === 'sandstorm') {
+    out.fogNear *= 0.5; out.fogFar *= 0.72; out.fogColor = 0xcf9059; out.sun.intensity *= 0.86;
+    out.groundMist.opacity = 0.34; out.groundMist.color = 0xdcab74; out.fogDensity *= 1.7;
+  } else if (weather === 'snow') {
+    out.fogNear *= 0.6; out.fogFar *= 0.82; out.sun.intensity *= 0.92; out.fogDensity *= 1.3;
+  }
+  if (out.clearColor === theme.fogColor && out.fogColor !== theme.fogColor) out.clearColor = out.fogColor;
   return out;
 }
 

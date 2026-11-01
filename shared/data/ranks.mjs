@@ -9,6 +9,74 @@ export const RANK_ROMAN = ['Ⅰ', 'Ⅱ', 'Ⅲ'];
 export const DEMOTION_SHIELD = { losses: 3, label: '连败保护' };
 export const LEGEND_SPAN = 900; // 传奇段位内部的进度跨度（无下一段位时使用）
 
+// ---------- 评级曲线参数（ratingDelta 从这里取值，便于调参） ----------
+// 设计口径：16 队均匀名次（不含连败保护）期望 ≈ −10 分/局——段位必须净流出，才能成为技术分层。
+// 旧参数（base 38 / spread 76 / winBonus 16 / 兜底 −34 / 连败护盾 0.35→−7）的实测均匀期望是
+// **+4.63 分/局**：中位 +9，而连败 3 场后垫底只扣 −7（原 −34，削掉 79%），
+// 于是「只要不是连续 3 局垫底，分数永远在涨」——随机玩家 713 局就能上传奇。
+//
+// 新曲线的锚点（16 队，均匀名次 = 1..16 各 1/16，含第 1 名的吃鸡加成）：
+//   · 吃鸡                   +69
+//   · 中位（第 8）           −11
+//   · 垫底（第 16）          −45（lossFloor）
+//   · 均匀名次期望           **−11.0/局**（1 杀 + 250 伤）/ **−10.3/局**（1 杀 + 400 伤）
+//   · 50% 吃鸡率玩家         **+28.5/局**（一半 +69、一半 −11）
+// 段位跨度 240–900 分：吃鸡率 50% 的玩家约 116 局净胜上传奇（3300 分），随机玩家净掉分。
+// 连败保护保留，但只做「深负分托底」：连败 ≥3 后最多把 −45 收到 −36（20% 缓冲），
+// 不再把所有负分压成 −7——旧护盾下随机玩家每局至多亏 7 分，数学上 E ≥ −6.56，
+// 叠加 1/16 概率的吃鸡加分后，负期望根本不可能达到。
+export const RATING = {
+  base: 20, // 中位名次（第 8/16）附近的基准分
+  spread: 76, // 名次从第 1 到第 last 的落差
+  winBonus: 45, // 吃鸡额外加成（让第一名与第二名拉开档次）
+  maxGain: 90, // 单局加分上限（防止极端战绩跳段）
+  killWeight: 2.2,
+  killCap: 14,
+  damageDivisor: 180,
+  damageCap: 10,
+  lossFloor: -45,
+  streakShield: 0.9, // 连败 ≥3 后的掉分乘数（只对深负分生效）
+  streakShieldCap: -36, // 连败保护后的最低单局掉分
+  hordeBase: 6,
+  hordeWave: 3,
+  hordeWaveCap: 30,
+  hordeKillCap: 8,
+};
+
+// 每个段位的赛季奖励：信用点 + 专属物品 id（物品来自 shared/data/store.mjs）
+// 结算/生涯界面据此展示「本赛季达到该段位可得」。
+const RANK_REWARDS = {
+  bronze: { credits: 300, items: ['spray_mist_eye'], label: '赛季保底' },
+  silver: { credits: 800, items: ['emote_salute', 'card_veteran'], label: '白银奖励' },
+  gold: { credits: 1600, items: ['chute_mist', 'wskin_ar7_olive'], label: '黄金奖励' },
+  platinum: { credits: 2600, items: ['skin_ember', 'car_paint_fog'], label: '铂金奖励' },
+  diamond: { credits: 4000, items: ['wskin_awm_white', 'skin_beacon'], label: '钻石奖励' },
+  master: { credits: 6000, items: ['skin_legend_mist', 'wskin_sr338_phantom'], label: '大师奖励' },
+  legend: { credits: 9000, items: ['skin_legend_dawn', 'wskin_legend_typhoon'], label: '传奇奖励' },
+};
+
+export const RANK_SEASONS = {
+  id: 'S1',
+  name: '第一赛季 · 雾起',
+  note: '段位奖励在赛季结束时按最高段位发放；peakRating 决定档位。',
+};
+
+// 段位完整信息（含 minRating / maxRating / rewards）
+export const RANK_LADDER = RANK_TIERS.map((tier, index) => {
+  const next = RANK_TIERS[index + 1] || null;
+  return {
+    ...tier,
+    index,
+    minRating: tier.min,
+    maxRating: next ? next.min - 1 : null,
+    span: next ? next.min - tier.min : LEGEND_SPAN,
+    rewards: RANK_REWARDS[tier.id] || { credits: 0, items: [], label: '' },
+  };
+});
+
+export const RANK_BY_ID = Object.fromEntries(RANK_LADDER.map(t => [t.id, t]));
+
+
 const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -53,6 +121,24 @@ export function rankFor(rating) {
     toNext: next ? Math.max(0, next.min - r) : 0,
     isMax: !next,
   };
+}
+
+// 评级用的净期望：给 UI/测试一个「打多少局升一段」的参考值。
+export function matchesToNextTier(rating, averageDelta = 22) {
+  const info = rankFor(rating);
+  if (info.isMax) return 0;
+  const need = Math.max(0, num(info.nextMin) - Math.max(0, num(rating)));
+  return Math.ceil(need / Math.max(1, num(averageDelta, 22)));
+}
+
+export function rewardsFor(tierId) {
+  return (RANK_BY_ID[tierId] || RANK_LADDER[0]).rewards;
+}
+
+export function seasonRewards(rating) {
+  const info = rankFor(rating);
+  const tier = RANK_BY_ID[info.tier] || RANK_LADDER[0];
+  return { tier: tier.id, name: tier.name, ...tier.rewards };
 }
 
 export function nextRank(rating) {

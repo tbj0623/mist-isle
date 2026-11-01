@@ -1,21 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      触觉反馈：client/main.js 默认 haptics: true，命中/爆头走 navigator.vibrate。
+      没有这条权限时 WebView 的 vibrate 调用静默失败（不报错，只是手感没了）。
+      ACCESS_NETWORK_STATE 已删除：WebView 与应用自身都不读网络状态，属于多余权限。
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!--
+      configChanges 缺一不可：少写一个，旋转/分屏/夜间模式切换就会重建 Activity，
+      WebView 被销毁 → Three.js 场景与对局状态全部丢失（= 丢局）。
+      其中 fontWeightAdjustment（Android 12+，系统「文字粗细」）与
+      grammaticalGender（Android 14+，按用户性别变化文案）这两条最容易被漏：
+      它们不在常见的旋转/深色模式路径上，用户改一次系统设置就会静默重建 Activity。
+
+      usesCleartextTraffic 保持 true 的原因：MainActivity 的 START_URL 走
+      http://appassets.androidplatform.net（WebViewAssetLoader.setHttpAllowed(true)），
+      这是 WebView 的本地伪域、不产生真实明文流量；但系统按字面 scheme 判定，关掉它
+      页面首屏就会被拦。收紧方案（换 https:// 加载并去掉 setHttpAllowed）需要真机回归
+      e2e 后再动，本次保持现状。
+
+      appCategory="game"：Android 16（targetSdk 36）起，应用在 smallestWidth >= 600dp
+      的设备（平板 / 折叠屏展开 / 自由窗口）上会**忽略** screenOrientation。声明为 game
+      类别可豁免这条限制，保证横屏游戏不会被强制转成竖屏。
+    -->
     <application
         android:label="雾岛突围"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/GameTheme"
         android:hardwareAccelerated="true"
+        android:appCategory="game"
         android:usesCleartextTraffic="true"
         android:allowBackup="false"
+        android:fullBackupContent="false"
         android:enableOnBackInvokedCallback="false"
         android:supportsRtl="true">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|uiMode">
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode|density|fontScale|fontWeightAdjustment|navigation|keyboard|touchscreen|locale|layoutDirection|colorMode|grammaticalGender"
+            android:windowSoftInputMode="adjustResize"
+            tools:ignore="DiscouragedApi">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

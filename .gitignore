@@ -8,7 +8,22 @@ android/app/src/main/assets/
 artifacts/
 test-results/
 playwright-report/
+# 覆盖率产物（npm run test:coverage 写入，Node 内置 V8 覆盖数据，不入库）
+coverage/
 *.log
 *.jks
 *.keystore
 .env
+# 对局结果落盘（运行时数据，不入库）
+# 必须写成 /data/：不加前导斜杠的话，git 会把任意层级的 data/ 目录都忽略掉，
+# 包括 shared/data/（武器/道具/地图/赛季/精通等**源码数据表**）——新加的数据表
+# 会被 git add . 静默漏掉，别人 clone 下来直接构建失败。
+/data/
+# release 签名口令：只提交 android/keystore.properties.example 模板
+android/keystore.properties
+# R8 产物与 mapping（保留以便回读混淆后的崩溃栈，但不入库）
+android/app/build/outputs/mapping/
+# 本地 IDE 状态与一次性调试页面不进入公共源码仓库
+/.zcode/
+/gp.html
+/scripts/archive/

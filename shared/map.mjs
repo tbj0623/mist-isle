@@ -183,8 +183,9 @@ class IndexGrid {
   }
 }
 
-/** 基于障碍列表构造碰撞/射线闭包（每张地图一份，紧凑索引 + 空间哈希加速）。 */
-export function makeCollision(obstacles, insideLand) {
+/** 基于障碍列表构造碰撞/射线闭包（每张地图一份，紧凑索引 + 空间哈希加速）。
+ *  terrain 可选：提供时 moveBody 会按坡度减慢上坡位移（签名保持不变）。 */
+export function makeCollision(obstacles, insideLand, terrain = null) {
   const n = obstacles.length;
   const bounds = new Float64Array(n * 4);
   const blocksBullets = new Uint8Array(n);
@@ -221,7 +222,17 @@ export function makeCollision(obstacles, insideLand) {
     if (!Number.isFinite(dx) || !Number.isFinite(dz)) return false;
     const len = Math.hypot(dx, dz);
     if (len < 1e-6) return false;
-    const steps = Math.max(1, Math.ceil(len / 0.3));
+    // 地形：上坡减速（speed *= 1 - slope*0.5），下坡略加速，陡坡基本走不动。
+    // 注意：moveBody 的签名是冻结契约，地形修正只能在这里内部缩放位移。
+    if (terrain) {
+      const slope = terrain.slopeAt(body.x, body.z);
+      if (slope > 0.02) {
+        const uphill = terrain.heightAt(body.x + dx, body.z + dz) > terrain.heightAt(body.x, body.z);
+        const factor = clamp(1 - slope * (uphill ? 0.5 : 0.28), 0.28, 1.14);
+        dx *= factor; dz *= factor;
+      }
+    }
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.3));
     const sx = dx / steps;
     const sz = dz / steps;
     let moved = false;
@@ -230,6 +241,15 @@ export function makeCollision(obstacles, insideLand) {
       if (!blocked(body.x, body.z + sz, r)) { body.z += sz; moved = true; }
     }
     return moved;
+  }
+
+  /** 带高度推进：供需要贴地的高度更新使用（不影响 moveBody 契约）。 */
+  function stepElevation(body, maxStep = 1.2) {
+    if (!terrain || !body) return 0;
+    const target = terrain.heightAt(body.x, body.z);
+    const d = target - (body.y || 0);
+    body.y = (body.y || 0) + (Math.abs(d) > maxStep ? Math.sign(d) * maxStep : d);
+    return body.y;
   }
 
   function wallDistance(x, z, dx, dz, range = 120) {
@@ -293,7 +313,7 @@ export function makeCollision(obstacles, insideLand) {
     return wallDistance(a.x, a.z, dx / len, dz / len, len) >= len - 0.35;
   }
 
-  return { blocked, moveBody, wallDistance, clearLine };
+  return { blocked, moveBody, wallDistance, clearLine, stepElevation };
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +337,11 @@ class Builder {
     this.landmarks = [];
     this.regions = def.regions.map((r, i) => ({
       id: r.id, name: r.name, x: r.x, z: r.z, tier: r.tier, kind: r.kind, r: r.r || 36, index: i,
+      // 区域差异化（房型/物资档位/密度），客户端小地图与统计也会读
+      zone: r.zone || 'wild',
+      lootTier: clamp(Math.round(r.lootTier ?? r.tier ?? 1), 1, 3),
+      density: Number.isFinite(r.density) ? r.density : 1,
+      note: r.note || '',
     }));
     this._id = { b: 0, o: 0, p: 0 };
     this.regionHits = this.regions.map(() => 0);
@@ -520,6 +545,8 @@ class Builder {
 
   tree(x, z, kind = 0) {
     if (!this.insideLand(x, z, 2.5)) return null;
+    // 水面/冰面保持开阔：树不长在水里（冰湖上出现黑树会毁掉「开阔冰面」的读感）
+    if (this.nearWater(x, z, 2.5)) return null;
     if (this.nearDoor(x, z, 2.8)) return null;
     if (!this.treeFree(x, z, 1.7)) return null;
     const scale = 0.78 + this.rng() * 0.75;
@@ -555,8 +582,11 @@ class Builder {
     this.spawnAnchors.push({ x, z });
   }
 
-  landmark(kind, x, z, r = 8, label = '') {
-    this.landmarks.push({ kind, x, z, r, label });
+  landmark(kind, x, z, r = 8, label = '', extra = null) {
+    const l = { kind, x, z, r, label, radius: r, name: label || kind, hero: false };
+    if (extra) Object.assign(l, extra);
+    this.landmarks.push(l);
+    return l;
   }
 }
 
@@ -609,11 +639,14 @@ function addHouse(bd, rng, x, z, w, d, opts = {}) {
   const gapW = Math.min(doorWidthRaw, Math.max(3.6, alongDoor - 2.4));
   const maxOff = Math.max(0, alongDoor * 0.5 - gapW * 0.5 - 0.5);
   const doorOffset = rand(rng, -1, 1) * Math.min(maxOff, alongDoor * 0.28);
-  const wallH = opts.h ?? rand(rng, 3.0, 3.6);
+  // 楼层数：urban 多层楼显著高出（视觉差异化），wild 一律单层
+  const floors = clamp(opts.floors || (rng() < 0.45 ? 2 : 1), 1, 3);
+  const baseWallH = opts.h ?? rand(rng, 3.0, 3.6);
+  const wallH = opts.h != null ? opts.h : (floors > 1 ? baseWallH * (1 + (floors - 1) * 0.82) : baseWallH);
   const theme = bd.def.theme;
   const b = {
     id: 'b' + bd._id.b++,
-    x, z, w, d, h: opts.h ?? wallH,
+    x, z, w, d, h: wallH,
     rot,
     walls: true,
     roofColor: pick(rng, theme.roof),
@@ -623,8 +656,8 @@ function addHouse(bd, rng, x, z, w, d, opts = {}) {
     radius: region ? region.r : 30,
     entrances: [],
     kind: opts.kind || 'house',
-    floors: opts.floors || (rng() < 0.45 ? 2 : 1),
-    tier: clamp(region ? region.tier : 1, 1, 3),
+    floors,
+    tier: clamp(region ? (region.lootTier ?? region.tier) : 1, 1, 3),
   };
   bd.buildings.push(b);
   bd._registerBuilding(b);
@@ -797,10 +830,27 @@ function scatterRocks(bd, rng, cx, cz, radius, count) {
     const x = cx + Math.cos(a) * rr;
     const z = cz + Math.sin(a) * rr;
     if (!bd.insideLand(x, z, 3)) continue;
+    // 水域（含冰湖等可走水面）保持开阔：不放岩石，避免踩点被石头堵住
+    if (bd.nearWater(x, z, 4)) continue;
     if (!bd.free(x, z, 2, 2, 1.6)) continue;
     if (roadOverlap(bd, x, z, 2, 2, 1)) continue;
     addRock(bd, rng, x, z, rand(rng, 0.7, 1.8), rand(rng, 0.6, 1.6));
   }
+}
+
+/** 出生/交火通道净空：中心 26m 内不放岩石类硬掩体（保证从 (0,0) 四向都有射界）。 */
+const CENTER_CLEAR_R = 26;
+function clearCenterHardCover(bd) {
+  const r2 = CENTER_CLEAR_R * CENTER_CLEAR_R;
+  let removed = 0;
+  for (let i = bd.obstacles.length - 1; i >= 0; i--) {
+    const o = bd.obstacles[i];
+    if (o.kind !== 'rock') continue;
+    if (dist2(o.x, o.z, 0, 0) > r2) continue;
+    bd.obstacles.splice(i, 1);
+    removed++;
+  }
+  return removed;
 }
 
 /** 在矩形区域内尝试放置一栋建筑；失败返回 null。 */
@@ -838,81 +888,157 @@ function addHall(bd, rng, x, z, w, d, opts = {}) {
 
 // ---------------------------------------------------------------------------
 // 区域生成配方：按 region.kind 组合基础构件，保证三张地图风格差异明显
+// zone（urban/wild/industrial/water/landmark）决定建筑形态，density 决定数量
 // ---------------------------------------------------------------------------
+
+/** 区域密度倍率（1 = 基准），限制在 0.35–1.6 避免极端值撑爆几何预算。 */
+function regionDensity(region) {
+  const d = Number.isFinite(region.density) ? region.density : 1;
+  return clamp(d, 0.35, 1.6);
+}
+
+/** 区域物资档位（1–3）：lootTier 优先，回退到 tier。 */
+function regionLootTier(region) {
+  const t = Number.isFinite(region.lootTier) ? region.lootTier : (region.tier ?? 1);
+  return clamp(Math.round(t), 1, 3);
+}
+
+/** 该区域「核心」半径：地标类区域内部留空给地标本体。 */
+function regionCore(region) {
+  return region.zone === 'landmark' ? Math.min(region.r * 0.52, 26) : 0;
+}
+
+/** 点是否落在地标核心里（建筑不要压上来；中心广场保持开阔）。 */
+function inRegionCore(bd, x, z) {
+  const cores = (bd && bd.heroCores) || [];
+  for (let i = 0; i < cores.length; i++) {
+    const c = cores[i];
+    if (dist2(x, z, c.x, c.z) < c.r * c.r) return true;
+  }
+  return false;
+}
+
+/** 按 zone 生成建筑参数：urban 多层 / industrial 大跨度 / wild 小屋 / water 栈桥仓库。 */
+function styleFor(region, rng, base = {}) {
+  const zone = region.zone || 'wild';
+  if (zone === 'urban') {
+    return {
+      ...base,
+      pad: base.pad ?? 2.0,
+      floors: rng() < 0.62 ? 2 + (rng() < 0.22 ? 1 : 0) : 2,
+      kind: 'tenement',
+      doorWidth: base.doorWidth ?? rand(rng, 3.8, 4.8),
+    };
+  }
+  if (zone === 'industrial') {
+    return {
+      ...base, pad: base.pad ?? 3.4, floors: 1, kind: 'hall',
+      doorWidth: base.doorWidth ?? rand(rng, 4.6, 6.4),
+    };
+  }
+  if (zone === 'water') {
+    return {
+      ...base, pad: base.pad ?? 2.8, floors: 1, kind: 'warehouse',
+      doorWidth: base.doorWidth ?? rand(rng, 4.4, 6.0),
+    };
+  }
+  if (zone === 'landmark') {
+    return { ...base, pad: base.pad ?? 2.6, floors: 1, kind: base.kind ?? 'outpost' };
+  }
+  return { ...base, pad: base.pad ?? 2.4, floors: 1, kind: 'cottage' };
+}
 
 /** 城镇：密集民宅 + 中央广场 + 商店/仓库。 */
 function buildTown(bd, rng, region, count = 11) {
-  const pads = [[0, 0, 12, 10]];
-  for (let i = 0; i < count; i++) {
-    const a = (i / count) * TAU + rand(rng, -0.12, 0.12);
+  const dens = regionDensity(region);
+  const n = Math.max(4, Math.round(count * dens));
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU + rand(rng, -0.12, 0.12);
     const rr = rand(rng, region.r * 0.22, region.r * 0.78);
     const x = region.x + Math.cos(a) * rr;
     const z = region.z + Math.sin(a) * rr;
-    const w = rand(rng, 8, 13);
-    const d = rand(rng, 7, 11);
-    placeBuilding(bd, rng, x, z, w, d, { pad: 2.4, roadPad: 0.3, doorSide: randInt(rng, 0, 3) });
+    if (inRegionCore(bd, x, z)) continue;
+    const w = rand(rng, 8, 13) * (region.zone === 'urban' ? 1.1 : 1);
+    const d = rand(rng, 7, 11) * (region.zone === 'urban' ? 1.1 : 1);
+    placeBuilding(bd, rng, x, z, w, d, {
+      ...styleFor(region, rng), roadPad: 0.3, doorSide: randInt(rng, 0, 3),
+    });
   }
   // 广场/院墙/路灯/长椅
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * TAU;
+  const crates = Math.max(2, Math.round(6 * dens));
+  for (let i = 0; i < crates; i++) {
+    const a = (i / crates) * TAU;
     addCrates(bd, rng, region.x + Math.cos(a) * region.r * 0.2, region.z + Math.sin(a) * region.r * 0.2, 2, 2.4);
   }
   for (let i = 0; i < 4; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.5, region.r * 0.5), region.z + rand(rng, -region.r * 0.5, region.r * 0.5), region.tier);
+    bd.loot(region.x + rand(rng, -region.r * 0.5, region.r * 0.5), region.z + rand(rng, -region.r * 0.5, region.r * 0.5), regionLootTier(region));
   }
 }
 
 /** 村庄/棚户区：小房子密集、巷子窄。 */
 function buildVillage(bd, rng, region) {
-  for (let i = 0; i < 14; i++) {
+  const dens = regionDensity(region);
+  const n = Math.max(6, Math.round(14 * dens));
+  for (let i = 0; i < n; i++) {
     const a = rng() * TAU;
     const rr = rand(rng, region.r * 0.15, region.r * 0.85);
     const x = region.x + Math.cos(a) * rr;
     const z = region.z + Math.sin(a) * rr;
+    if (inRegionCore(bd, x, z)) continue;
     placeBuilding(bd, rng, x, z, rand(rng, 6, 9), rand(rng, 5, 8), {
-      pad: 1.8, roadPad: 0.2, doorSide: randInt(rng, 0, 3), floors: 1,
+      ...styleFor(region, rng), roadPad: 0.2, doorSide: randInt(rng, 0, 3),
     });
   }
-  for (let i = 0; i < 5; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.6, region.r * 0.6), region.z + rand(rng, -region.r * 0.6, region.r * 0.6), Math.min(3, region.tier));
+  const lootN = Math.max(2, Math.round(5 * dens));
+  for (let i = 0; i < lootN; i++) {
+    bd.loot(region.x + rand(rng, -region.r * 0.6, region.r * 0.6), region.z + rand(rng, -region.r * 0.6, region.r * 0.6), regionLootTier(region));
   }
 }
 
 /** 港口/工业区：大厂房 + 集装箱迷宫 + 龙门吊 + 路障。 */
 function buildPort(bd, rng, region) {
-  const halls = randInt(rng, 4, 6);
+  const dens = regionDensity(region);
+  const halls = Math.max(2, Math.round(randInt(rng, 4, 6) * dens));
   for (let i = 0; i < halls; i++) {
     const a = (i / halls) * TAU + rand(rng, -0.2, 0.2);
     const rr = rand(rng, region.r * 0.25, region.r * 0.7);
-    placeHall(bd, rng, region.x + Math.cos(a) * rr, region.z + Math.sin(a) * rr,
-      rand(rng, 14, 22), rand(rng, 10, 15), { pad: 3.6, roadPad: 0.5 });
+    const x = region.x + Math.cos(a) * rr;
+    const z = region.z + Math.sin(a) * rr;
+    if (inRegionCore(bd, x, z)) continue;
+    placeHall(bd, rng, x, z, rand(rng, 14, 22), rand(rng, 10, 15), { ...styleFor(region, rng, { kind: 'hall' }), roadPad: 0.5 });
   }
-  // 集装箱阵列（迷宫）
-  const cols = 5, rows = 4;
+  // 集装箱阵列（迷宫）：chisha/baiye 的 industrial 区更密
+  const cols = region.zone === 'industrial' ? 5 : 4;
+  const rows = region.zone === 'industrial' ? 4 : 3;
   for (let cx = 0; cx < cols; cx++) {
     for (let cz = 0; cz < rows; cz++) {
       if (rng() < 0.22) continue;
       const x = region.x + (cx - cols / 2) * 8.5 + rand(rng, -0.8, 0.8);
       const z = region.z + (cz - rows / 2) * 8.5 + rand(rng, -0.8, 0.8);
+      if (inRegionCore(bd, x, z)) continue;
       addContainer(bd, rng, x, z, rng() < 0.5 ? 0 : HALF_PI);
-      if (rng() < 0.3) bd.loot(x, z, region.tier);
+      if (rng() < 0.3) bd.loot(x, z, regionLootTier(region));
     }
   }
-  for (let i = 0; i < 10; i++) {
+  const barriers = Math.max(4, Math.round(10 * dens));
+  for (let i = 0; i < barriers; i++) {
     const a = rng() * TAU, rr = rand(rng, region.r * 0.5, region.r);
     addBarrier(bd, rng, region.x + Math.cos(a) * rr, region.z + Math.sin(a) * rr, rand(rng, 0, TAU));
   }
-  for (let i = 0; i < 6; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.8, region.r * 0.8), region.z + rand(rng, -region.r * 0.8, region.r * 0.8), region.tier);
+  for (let i = 0; i < Math.max(3, Math.round(6 * dens)); i++) {
+    bd.loot(region.x + rand(rng, -region.r * 0.8, region.r * 0.8), region.z + rand(rng, -region.r * 0.8, region.r * 0.8), regionLootTier(region));
   }
 }
 
 /** 农场：谷仓 + 长条田垄 + 少量小屋。 */
 function buildFarm(bd, rng, region) {
-  for (let i = 0; i < 4; i++) {
+  const dens = regionDensity(region);
+  for (let i = 0; i < Math.max(2, Math.round(4 * dens)); i++) {
     const a = (i / 4) * TAU;
-    placeHall(bd, rng, region.x + Math.cos(a) * region.r * 0.45, region.z + Math.sin(a) * region.r * 0.45,
-      rand(rng, 13, 18), rand(rng, 9, 13), { pad: 4, roadPad: 0.5 });
+    const x = region.x + Math.cos(a) * region.r * 0.45;
+    const z = region.z + Math.sin(a) * region.r * 0.45;
+    if (inRegionCore(bd, x, z)) continue;
+    placeHall(bd, rng, x, z, rand(rng, 13, 18), rand(rng, 9, 13), { ...styleFor(region, rng, { kind: 'barn' }), roadPad: 0.5 });
   }
   for (let i = 0; i < 8; i++) {
     const x = region.x + rand(rng, -region.r * 0.7, region.r * 0.7);
@@ -920,57 +1046,71 @@ function buildFarm(bd, rng, region) {
     bd.prop(x, z, rand(rng, 4, 9), 1.6, 'hay', 0xc9b06a, 0.9);
   }
   for (let i = 0; i < 4; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.6, region.r * 0.6), region.z + rand(rng, -region.r * 0.6, region.r * 0.6), region.tier);
+    bd.loot(region.x + rand(rng, -region.r * 0.6, region.r * 0.6), region.z + rand(rng, -region.r * 0.6, region.r * 0.6), regionLootTier(region));
   }
-  scatterTrees(bd, rng, region.x, region.z, region.r * 1.1, 40);
+  scatterTrees(bd, rng, region.x, region.z, region.r * 1.1, Math.round(40 * dens));
 }
 
 /** 矿坑：同心岩石环 + 矿车/碎石 + 少量工棚。 */
 function buildMine(bd, rng, region) {
+  const dens = regionDensity(region);
   rockRing(bd, rng, region.x, region.z, region.r * 0.42, 22, 3);
   rockRing(bd, rng, region.x, region.z, region.r * 0.68, 30, 3.4);
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < Math.max(2, Math.round(5 * dens)); i++) {
     const a = rng() * TAU;
-    placeBuilding(bd, rng, region.x + Math.cos(a) * region.r * 0.3, region.z + Math.sin(a) * region.r * 0.3,
-      rand(rng, 8, 12), rand(rng, 7, 10), { pad: 2.6 });
+    const x = region.x + Math.cos(a) * region.r * 0.3;
+    const z = region.z + Math.sin(a) * region.r * 0.3;
+    if (inRegionCore(bd, x, z)) continue;
+    placeBuilding(bd, rng, x, z, rand(rng, 8, 12), rand(rng, 7, 10), styleFor(region, rng, { kind: 'shack' }));
   }
   for (let i = 0; i < 12; i++) {
     const a = rng() * TAU, rr = rand(rng, region.r * 0.3, region.r * 0.9);
     addWreck(bd, rng, region.x + Math.cos(a) * rr, region.z + Math.sin(a) * rr, rand(rng, 0, TAU));
   }
   for (let i = 0; i < 10; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.8, region.r * 0.8), region.z + rand(rng, -region.r * 0.8, region.r * 0.8), region.tier);
+    bd.loot(region.x + rand(rng, -region.r * 0.8, region.r * 0.8), region.z + rand(rng, -region.r * 0.8, region.r * 0.8), regionLootTier(region));
   }
 }
 
-/** 检查站/哨卡：小屋 + 路障阵列 + 掩体墙。 */
+/** 检查站/哨卡：小屋 + 路障阵列 + 掩体墙（中心广场保持开阔）。 */
 function buildCheckpoint(bd, rng, region) {
-  for (let i = 0; i < 5; i++) {
+  const dens = regionDensity(region);
+  // 开阔广场半径：中央检查站必须留出可穿行的空地（出生/交火都靠它）
+  const plaza = Math.max(14, region.r * 0.42);
+  for (let i = 0; i < Math.max(2, Math.round(5 * dens)); i++) {
     const a = (i / 5) * TAU;
-    placeBuilding(bd, rng, region.x + Math.cos(a) * region.r * 0.4, region.z + Math.sin(a) * region.r * 0.4,
-      rand(rng, 7, 11), rand(rng, 6, 9), { pad: 2.2 });
+    const x = region.x + Math.cos(a) * region.r * 0.4;
+    const z = region.z + Math.sin(a) * region.r * 0.4;
+    if (inRegionCore(bd, x, z)) continue;
+    placeBuilding(bd, rng, x, z, rand(rng, 7, 11), rand(rng, 6, 9), styleFor(region, rng, { kind: 'outpost' }));
   }
   for (let i = 0; i < 16; i++) {
-    const a = rng() * TAU, rr = rand(rng, region.r * 0.2, region.r);
+    const a = rng() * TAU, rr = rand(rng, plaza, region.r);
     addBarrier(bd, rng, region.x + Math.cos(a) * rr, region.z + Math.sin(a) * rr, rand(rng, 0, TAU), rand(rng, 3, 5));
   }
-  for (let i = 0; i < 6; i++) addCrates(bd, rng, region.x + rand(rng, -region.r * 0.6, region.r * 0.6), region.z + rand(rng, -region.r * 0.6, region.r * 0.6), 2, 2.2);
+  for (let i = 0; i < 6; i++) {
+    const a = rng() * TAU, rr = rand(rng, plaza * 1.05, region.r * 0.75);
+    addCrates(bd, rng, region.x + Math.cos(a) * rr, region.z + Math.sin(a) * rr, 2, 2.2);
+  }
   for (let i = 0; i < 8; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.7, region.r * 0.7), region.z + rand(rng, -region.r * 0.7, region.r * 0.7), region.tier);
+    bd.loot(region.x + rand(rng, -region.r * 0.7, region.r * 0.7), region.z + rand(rng, -region.r * 0.7, region.r * 0.7), regionLootTier(region));
   }
 }
 
 /** 野地：散落小屋 + 树丛 + 岩石。 */
 function buildWild(bd, rng, region) {
-  for (let i = 0; i < 5; i++) {
+  const dens = regionDensity(region);
+  for (let i = 0; i < Math.max(1, Math.round(5 * dens)); i++) {
     const a = rng() * TAU, rr = rand(rng, region.r * 0.2, region.r * 0.8);
-    placeBuilding(bd, rng, region.x + Math.cos(a) * rr, region.z + Math.sin(a) * rr,
-      rand(rng, 6, 9), rand(rng, 5, 8), { pad: 2.4, floors: 1 });
+    const x = region.x + Math.cos(a) * rr;
+    const z = region.z + Math.sin(a) * rr;
+    if (inRegionCore(bd, x, z)) continue;
+    placeBuilding(bd, rng, x, z, rand(rng, 6, 9), rand(rng, 5, 8), styleFor(region, rng, { kind: 'cottage' }));
   }
-  scatterTrees(bd, rng, region.x, region.z, region.r * 1.15, 70);
-  scatterRocks(bd, rng, region.x, region.z, region.r * 0.9, 16);
+  scatterTrees(bd, rng, region.x, region.z, region.r * 1.15, Math.round(70 * (0.65 + dens * 0.5)));
+  scatterRocks(bd, rng, region.x, region.z, region.r * 0.9, Math.round(16 * dens));
   for (let i = 0; i < 5; i++) {
-    bd.loot(region.x + rand(rng, -region.r * 0.7, region.r * 0.7), region.z + rand(rng, -region.r * 0.7, region.r * 0.7), Math.max(1, region.tier - 1));
+    bd.loot(region.x + rand(rng, -region.r * 0.7, region.r * 0.7), region.z + rand(rng, -region.r * 0.7, region.r * 0.7), Math.max(1, regionLootTier(region) - 1));
   }
 }
 
@@ -1025,6 +1165,7 @@ function fillWilderness(bd, rng, def) {
     const x = Math.cos(a) * rr;
     const z = Math.sin(a) * rr;
     if (!bd.clearSpot(x, z, 2)) continue;
+    if (bd.nearWater(x, z, 4)) continue;   // 水面/冰面保持开阔
     addRock(bd, rng, x, z, rand(rng, 0.8, 2.2), rand(rng, 0.8, 2.4));
   }
 }
@@ -1085,10 +1226,19 @@ function fillAnchors(bd, rng) {
       if (ok) pts.push(c);
     }
   }
+  // 锚点顺序稳定化：按角度排序，使 anchor[0] 落在可预期的方位。
+  // （原顺序来自打乱后的候选表，anchor[0] 会随生成流变化飘到任意角落，
+  //   依赖它的工具/测试因此不稳定。）
+  pts.sort((a, b) => {
+    const aa = Math.atan2(a.z, a.x), ab = Math.atan2(b.z, b.x);
+    if (Math.abs(aa - ab) > 1e-9) return aa - ab;
+    return Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z);
+  });
   for (let i = 0; i < pts.length; i++) bd.anchor(pts[i].x, pts[i].z);
 }
 
-/** 导航网格：4m 单元，供 Bot A* 与快速通行检查。 */
+/** 导航网格：4m 单元，供 Bot A* 与快速通行检查。
+ *  地形启用时，坡度 > 35° 的单元标记为不可走（陡崖/矿坑壁）。 */
 function buildNav(world) {
   const cell = NAV_CELL;
   const radius = world.radius;
@@ -1098,29 +1248,42 @@ function buildNav(world) {
   const cols = span;
   const rows = span;
   const walkable = new Uint8Array(cols * rows);
+  const steep = new Uint8Array(cols * rows);
   const blocked = world.blocked;
+  const terrain = world.terrain || null;
   for (let r = 0; r < rows; r++) {
     const z = minZ + (r + 0.5) * cell;
     for (let c = 0; c < cols; c++) {
       const x = minX + (c + 0.5) * cell;
       walkable[r * cols + c] = blocked(x, z, 0.9) ? 0 : 1;
+      // 坡度 > 35° 单独标记（walkable 保持与 blocked 严格一致：
+      // 碰撞契约测试逐格比对二者，坡度是不可走性的「叠加层」而非替代品）
+      if (terrain && terrain.slopeAt(x, z) > MAX_SLOPE) steep[r * cols + c] = 1;
     }
   }
   const nav = {
-    cell, cols, rows, minX, minZ, walkable,
+    cell, cols, rows, minX, minZ, walkable, steep,
     colOf(x) { return Math.floor((x - minX) / cell); },
     rowOf(z) { return Math.floor((z - minZ) / cell); },
     idxOf(x, z) { return this.rowOf(z) * cols + this.colOf(x); },
+    /** 坡度 > 35° 的单元：不能被 Bot 规划为路径（陡崖/矿坑壁）。 */
+    isSteep(x, z) {
+      const c = nav.colOf(x); const r = nav.rowOf(z);
+      if (c < 0 || r < 0 || c >= cols || r >= rows) return false;
+      return steep[r * cols + c] === 1;
+    },
+    /** 可通行 = 碰撞空闲 且 坡度不超限。 */
     isWalkable(x, z) {
       const c = nav.colOf(x); const r = nav.rowOf(z);
       if (c < 0 || r < 0 || c >= cols || r >= rows) return false;
-      return nav.walkable[r * cols + c] === 1;
+      const i = r * cols + c;
+      return walkable[i] === 1 && steep[i] !== 1;
     },
     blockedAt(x, z) { return !nav.isWalkable(x, z); },
     nearestWalkable(x, z, maxR = 24) {
       const c0 = nav.colOf(x);
       const r0 = nav.rowOf(z);
-      if (c0 >= 0 && r0 >= 0 && c0 < cols && r0 < rows && nav.walkable[r0 * cols + c0] === 1) {
+      if (c0 >= 0 && r0 >= 0 && c0 < cols && r0 < rows && nav.isWalkable(x, z)) {
         return { x, z };
       }
       // 以单元中心为起点做环形搜索，命中后返回单元中心（保证落在该单元内）
@@ -1133,14 +1296,29 @@ function buildNav(world) {
           const c = nav.colOf(nx);
           const r = nav.rowOf(nz);
           if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
-          if (nav.walkable[r * cols + c] !== 1) continue;
+          const idx = r * cols + c;
+          if (walkable[idx] !== 1 || steep[idx] === 1) continue;
           return { x: minX + (c + 0.5) * cell, z: minZ + (r + 0.5) * cell };
         }
       }
-      // 全图兜底：找任意可行走单元
+      // 兜底 1：只要求碰撞空闲（陡坡也比卡死好）
+      for (let rr = cell; rr <= maxR * 2; rr += cell) {
+        const steps = Math.max(8, Math.round((TAU * rr) / cell));
+        for (let i = 0; i < steps; i++) {
+          const a = (i / steps) * TAU;
+          const nx = x + Math.cos(a) * rr;
+          const nz = z + Math.sin(a) * rr;
+          const c = nav.colOf(nx);
+          const r = nav.rowOf(nz);
+          if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+          if (walkable[r * cols + c] !== 1) continue;
+          return { x: minX + (c + 0.5) * cell, z: minZ + (r + 0.5) * cell };
+        }
+      }
+      // 全图兜底：找任意碰撞空闲单元
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          if (nav.walkable[r * cols + c] === 1) {
+          if (walkable[r * cols + c] === 1) {
             return { x: minX + (c + 0.5) * cell, z: minZ + (r + 0.5) * cell };
           }
         }
@@ -1158,8 +1336,201 @@ function buildNav(world) {
       }
       return true;
     },
+    /** 数据统计：供诊断查看陡坡单元占比。 */
+    stats() {
+      let wall = 0, cliff = 0;
+      for (let i = 0; i < walkable.length; i++) {
+        if (walkable[i] === 0) wall++;
+        else if (steep[i] === 1) cliff++;
+      }
+      return { cells: walkable.length, blocked: wall, steepCliff: cliff, walkable: walkable.length - wall - cliff };
+    },
   };
   return nav;
+}
+
+// ---------------------------------------------------------------------------
+// 高度场（地形层次）：低频噪声 + 平地掩码 + 地标造型，供渲染与坡度导航使用
+// ---------------------------------------------------------------------------
+export const TERRAIN_RES = 96;         // 采样格数（跨整个直径）
+export const MAX_SLOPE = 0.70;         // tan(35°)：超过即视为不可行走
+const TERRAIN_PAD = 4;                 // 生成边界外扩
+
+/** 整数坐标哈希 → [0,1)，用于确定性值噪声。 */
+function hash2i(ix, iz, seed) {
+  let h = Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(seed, 1442695041);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/** 平滑值噪声（0..1）。 */
+function noise2(x, z, seed) {
+  const xi = Math.floor(x), zi = Math.floor(z);
+  const xf = x - xi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+  const a = hash2i(xi, zi, seed), b = hash2i(xi + 1, zi, seed);
+  const c = hash2i(xi, zi + 1, seed), d = hash2i(xi + 1, zi + 1, seed);
+  const top = a + (b - a) * u, bot = c + (d - c) * u;
+  return top + (bot - top) * v;
+}
+
+const smooth01 = (t) => {
+  const x = t < 0 ? 0 : t > 1 ? 1 : t;
+  return x * x * (3 - 2 * x);
+};
+const DEG = Math.PI / 180;
+
+/** 点到旋转矩形的距离，返回 {d, inside}；inside 表示距离内部边界（负值）。 */
+function rotRectDist(px, pz, r) {
+  const cos = Math.cos(-(r.rot || 0)), sin = Math.sin(-(r.rot || 0));
+  const dx = px - r.x, dz = pz - r.z;
+  const lx = dx * cos - dz * sin, lz = dx * sin + dz * cos;
+  const ox = Math.abs(lx) - r.w * 0.5, oz = Math.abs(lz) - r.d * 0.5;
+  const outside = Math.hypot(Math.max(ox, 0), Math.max(oz, 0));
+  return { d: outside, inside: outside === 0 ? Math.max(ox, oz) : -outside };
+}
+
+/** 地标造型对高度的贡献（additive）。 */
+function landmarkShape(lm, x, z) {
+  const dx = x - lm.x, dz = z - lm.z;
+  const d = Math.hypot(dx, dz);
+  const r = lm.radius || lm.r || 12;
+  if (d > r * 1.5) return 0;
+  const t = clamp(d / r, 0, 1.5);
+  if (lm.kind === 'open_pit') {
+    // 下沉式矿坑：外圈阶梯台地 + 一条角度窗口内的平直坡道（可走上下）
+    const depth = lm.depth || 20;
+    if (t >= 1) return 0;
+    const ang = Math.atan2(dz, dx);
+    const da = Math.atan2(Math.sin(ang - (lm.rampAngle ?? 2.2)), Math.cos(ang - (lm.rampAngle ?? 2.2)));
+    if (Math.abs(da) < 0.30) return -depth * (1 - t) * 0.92;
+    const steps = 5;
+    const idx = t * steps;
+    const tier = Math.floor(idx) / steps;
+    const frac = idx - Math.floor(idx);
+    const profile = tier + smooth01(frac) / steps;
+    return -depth * (1 - profile) * 0.92;
+  }
+  if (lm.kind === 'radar_station') {
+    const pid = lm.hill || 9;
+    return pid * Math.pow(1 - smooth01(clamp(t / 0.72, 0, 1)), 1.6);
+  }
+  if (lm.kind === 'signal_tower') {
+    return 2.2 * (1 - smooth01(clamp(t / 0.7, 0, 1)));
+  }
+  if (lm.kind === 'waterfall') {
+    // 断崖：沿局部 -x 方向抬升成台地，台地边缘 7m 内做陡坎
+    const c = Math.cos(lm.rot || 0), s = Math.sin(lm.rot || 0);
+    const lx = dx * c - dz * s;
+    const edge = r * 0.30;
+    const h = (lm.cliff || 11) * smooth01((edge - lx) / 7 + 0.5) * (1 - smooth01((Math.abs(dz) - r * 0.9) / (r * 0.4)));
+    return h;
+  }
+  if (lm.kind === 'bridge') {
+    // 桥头引桥：两端缓坡抬升
+    return 1.8 * (1 - smooth01(clamp(t / 0.8, 0, 1)));
+  }
+  if (lm.kind === 'shipwreck' || lm.kind === 'container_maze' || lm.kind === 'warehouse') {
+    return 0.6 * (1 - smooth01(t));
+  }
+  return 0;
+}
+
+/**
+ * 构建高度场。flat 掩码来自建筑/道路/水域（含距离衰减），地标造型叠加在上面。
+ * 返回 { heightAt, slopeAt, min, max, step, res, flatAt }。
+ */
+export function makeTerrain(def, world) {
+  const cfg = def.terrain || {};
+  const amplitude = cfg.amplitude ?? 4.5;
+  const wavelength = cfg.wavelength ?? 140;
+  const flats = cfg.flats ?? 13;
+  const seed = cfg.seed ?? 0x1234;
+  const radius = world.radius;
+  const res = TERRAIN_RES;
+  const minX = -radius - TERRAIN_PAD;
+  const span = (radius + TERRAIN_PAD) * 2;
+  const step = span / res;
+  const gw = res + 1;
+  const heights = new Float32Array(gw * gw);
+  const flats2 = new Float32Array(gw * gw);
+  const buildings = world.buildings || [];
+  const roads = world.roads || [];
+  const waters = world.waters || [];
+  const landmarks = world.landmarks || [];
+  const shapes = landmarks.filter((l) => ['open_pit', 'radar_station', 'signal_tower', 'waterfall', 'bridge', 'shipwreck', 'container_maze', 'warehouse'].includes(l.kind));
+
+  for (let gz = 0; gz < gw; gz++) {
+    const z = minX + gz * step;
+    for (let gx = 0; gx < gw; gx++) {
+      const x = minX + gx * step;
+      // 1) 平地权重：建筑/道路/水域越近越平
+      let flat = 0;
+      for (let i = 0; i < buildings.length && flat < 1; i++) {
+        const b = buildings[i];
+        if (Math.abs(x - b.x) > b.w * 0.5 + flats + 4 || Math.abs(z - b.z) > b.d * 0.5 + flats + 4) continue;
+        const ox = Math.abs(x - b.x) - b.w * 0.5, oz = Math.abs(z - b.z) - b.d * 0.5;
+        const dd = Math.hypot(Math.max(ox, 0), Math.max(oz, 0));
+        flat = Math.max(flat, 1 - smooth01(dd / flats));
+      }
+      for (let i = 0; i < roads.length && flat < 1; i++) {
+        const rd = roads[i];
+        if (Math.abs(x - rd.x) > rd.w * 0.5 + rd.d * 0.5 + flats + 4) continue;
+        const { d } = rotRectDist(x, z, rd);
+        flat = Math.max(flat, 1 - smooth01(d / (flats * 0.85)));
+      }
+      for (let i = 0; i < waters.length && flat < 1; i++) {
+        const w = waters[i];
+        const dd = w.r ? Math.max(0, Math.hypot(x - w.x, z - w.z) - w.r)
+          : Math.hypot(Math.max(Math.abs(x - w.x) - w.w * 0.5, 0), Math.max(Math.abs(z - w.z) - w.d * 0.5, 0));
+        flat = Math.max(flat, 1 - smooth01(dd / (flats * 1.2)));
+      }
+      flats2[gz * gw + gx] = flat;
+      // 2) 低频噪声（两个八度）
+      const nx = x / wavelength, nz = z / wavelength;
+      let n = (noise2(nx, nz, seed) - 0.5) * 2;
+      n += (noise2(nx * 2.7 + 11.3, nz * 2.7 + 7.1, seed ^ 0x5f5f) - 0.5) * 0.7;
+      let h = n * amplitude * (1 - flat);
+      // 3) 地标造型
+      for (let i = 0; i < shapes.length; i++) h += landmarkShape(shapes[i], x, z);
+      // 4) 外圈海岸压平到 0（避免海岸线出现高差断崖）
+      const rr = Math.hypot(x, z);
+      if (rr > radius - 22) h *= 1 - smooth01((rr - (radius - 22)) / 18);
+      heights[gz * gw + gx] = h;
+    }
+  }
+
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < heights.length; i++) { if (heights[i] < lo) lo = heights[i]; if (heights[i] > hi) hi = heights[i]; }
+
+  const sampleAt = (arr, x, z) => {
+    const fx = (x - minX) / step, fz = (z - minX) / step;
+    const x0 = Math.floor(fx), z0 = Math.floor(fz);
+    if (x0 < 0 || z0 < 0 || x0 >= res || z0 >= res) return arr === heights ? 0 : 1;
+    const tx = fx - x0, tz = fz - z0;
+    const i00 = z0 * gw + x0, i10 = i00 + 1, i01 = i00 + gw, i11 = i01 + 1;
+    const top = arr[i00] + (arr[i10] - arr[i00]) * tx;
+    const bot = arr[i01] + (arr[i11] - arr[i01]) * tx;
+    return top + (bot - top) * tz;
+  };
+
+  const heightAt = (x, z) => {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return 0;
+    return sampleAt(heights, x, z);
+  };
+  /** 坡度（rise/run）；> MAX_SLOPE 即 35° 以上。 */
+  const slopeAt = (x, z) => {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return 0;
+    const d = step * 0.5;
+    const hx = (heightAt(x + d, z) - heightAt(x - d, z)) / (2 * d);
+    const hz = (heightAt(x, z + d) - heightAt(x, z - d)) / (2 * d);
+    return Math.hypot(hx, hz);
+  };
+  return {
+    heightAt, slopeAt, min: lo, max: hi, step, res, minX, gw,
+    flatAt: (x, z) => sampleAt(flats2, x, z),
+    heights,
+  };
 }
 
 /** 水域先行注册（建筑/树木/物资点需避开深水）。 */
@@ -1196,7 +1567,7 @@ function applyThemeFeatures(bd, rng, def) {
       const x = -88 + Math.cos(a) * 22;
       const z = 78 + Math.sin(a) * 22;
       bd.obstacle(x, z, 2.2, 2.2, 'crate', { h: 7.5, big: true });
-      bd.landmark('windmill', x, z, 3, '风车');
+      bd.landmark('windmill', x, z, 3, '风车', { hero: false });
     }
     for (let i = 0; i < 26; i++) {
       const a = (i / 26) * TAU;
@@ -1233,7 +1604,6 @@ function applyThemeFeatures(bd, rng, def) {
     for (let i = 0; i < 12; i++) {
       addBarrier(bd, rng, rand(rng, -30, 30), -118 + rand(rng, -6, 6), rand(rng, 0, TAU), rand(rng, 3, 5));
     }
-    for (const l of lm) bd.landmark(l.kind, l.x, l.z, l.r, l.name);
     return;
   }
   if (def.id === 'chisha') {
@@ -1291,7 +1661,6 @@ function applyThemeFeatures(bd, rng, def) {
       bd.prop(-176 + t * 96, -104 + t * 112, 12, 0.5, 'rail', 0x5b5b5b, 0.2);
     }
     for (let i = 0; i < 8; i++) bd.loot(-168 + i * 11, -100 + i * 14, 2);
-    for (const l of lm) bd.landmark(l.kind, l.x, l.z, l.r, l.name);
     return;
   }
   // baiye 白夜港
@@ -1337,11 +1706,442 @@ function applyThemeFeatures(bd, rng, def) {
     const a = rng() * TAU, rr = rand(rng, 8, 26);
     addRock(bd, rng, 132 + Math.cos(a) * rr, 44 + Math.sin(a) * rr, rand(rng, 1.6, 3.4), rand(rng, 1.4, 3.6));
   }
-  for (const l of lm) bd.landmark(l.kind, l.x, l.z, l.r, l.name);
 }
 
-/** 带缺口的环形岩带（用于斜坡通道）。 */
-function rockRingSkip(bd, rng, cx, cz, radius, count, thick, gapWidth) {
+// ---------------------------------------------------------------------------
+// 地标（每图 4 个）：注册 → 占位 → 生成形态 → 战利品分布
+// 约定：landmark { id, name, kind, x, z, radius, r, tier, rot }，写进 world.landmarks
+// ---------------------------------------------------------------------------
+const LANDMARK_CLEAR = 6;   // 地标本体周围留空（米）
+
+/**
+ * 注册地标本体（在常规区域生成之前调用）。
+ * 把核心区登记为 bigs（禁止常规建筑压上来），并补齐元数据。
+ */
+function registerLandmarks(bd, def) {
+  const specs = def.landmarks || [];
+  for (let i = 0; i < specs.length; i++) {
+    const s = specs[i];
+    const l = {
+      id: `${def.id}_${s.kind}_${i}`,
+      name: s.name || s.kind,
+      kind: s.kind,
+      x: s.x, z: s.z,
+      radius: s.r || s.radius || 10,
+      r: s.r || s.radius || 10,
+      tier: clamp(s.tier ?? 2, 1, 3),
+      rot: s.rot || 0,
+      mapId: def.id,
+      hero: true,
+    };
+    for (const key of ['height', 'depth', 'hill', 'cliff', 'rampAngle']) {
+      if (s[key] != null) l[key] = s[key];
+    }
+    bd.landmarks.push(l);
+    // 占位：常规建筑/障碍不得侵入地标核心
+    bd.bigs.push({ x: l.x, z: l.z, w: l.r * 2, d: l.r * 2, landmark: l.id });
+    if (!bd.heroCores) bd.heroCores = [];
+    bd.heroCores.push({ x: l.x, z: l.z, r: l.r * 0.72, id: l.id });
+  }
+}
+
+/** 地标中心附近的物资点：中心 tier3 概率更高，向外围递减。 */
+function landmarkLoot(bd, rng, l, count) {
+  const R = l.radius;
+  const centerTier = clamp(l.tier + 1, 1, 3);
+  for (let i = 0; i < count; i++) {
+    const a = rng() * TAU;
+    const rr = Math.sqrt(rng()) * R * 0.92;
+    const x = l.x + Math.cos(a) * rr;
+    const z = l.z + Math.sin(a) * rr;
+    if (!bd.insideLand(x, z, 1.2)) continue;
+    if (bd.nearSolid(x, z, 0.7)) continue;
+    // 中心 40% 半径内必给高档位，外圈按地标档位
+    const t = rr < R * 0.4 ? centerTier : (rng() < 0.34 ? clamp(l.tier + 1, 1, 3) : l.tier);
+    bd.loot(x, z, t);
+  }
+  // 中心永久放一个最高档点（地标「心脏」，可攀爬/可争夺）
+  if (bd.insideLand(l.x, l.z, 0.5)) bd.loot(l.x, l.z, 3);
+}
+
+/** 在地标周围清出场地（移除会压进本体的树）。 */
+function clearLandmarkArea(bd, l, pad = 3) {
+  const lim = l.radius + pad;
+  for (let i = bd.trees.length - 1; i >= 0; i--) {
+    const t = bd.trees[i];
+    if (dist2(t.x, t.z, l.x, l.z) < lim * lim) bd.trees.splice(i, 1);
+  }
+}
+
+/** 木栈道：从 (x,z) 沿 rot 方向铺 len 米（板条 + 桩），并可选地伸入水中。 */
+function buildWoodPier(bd, rng, x, z, rot, len, width = 3.2) {
+  const ux = Math.sin(rot), uz = Math.cos(rot);
+  const px = -uz, pz = ux;
+  const planks = Math.max(4, Math.round(len / 1.4));
+  for (let i = 0; i < planks; i++) {
+    const t = (i + 0.5) / planks * len;
+    const cx = x + ux * t, cz = z + uz * t;
+    if (!bd.insideLand(cx, cz, 0.5)) {
+      // 水上段：只做视觉 prop（不挡路，避免把玩家困在海上）
+      bd.prop(cx, cz, width, 1.5, 'plank', 0x9a7a52, 0.24);
+      continue;
+    }
+    bd.prop(cx, cz, width, 1.5, 'plank', 0x9a7a52, 0.24);
+    if (i % 3 === 0) {
+      for (const side of [-1, 1]) {
+        bd.prop(cx + px * width * 0.5 * side, cz + pz * width * 0.5 * side, 0.28, 0.28, 'post', 0x6d5334, 1.2);
+      }
+    }
+  }
+  return { ux, uz, px, pz };
+}
+
+/** 生成地标本体形态（几何 + 碰撞 + 物资）。 */
+function buildLandmark(bd, rng, l) {
+  const tier = l.tier;
+  const addWall = (x, z, w, d, h, extra = {}) => bd.obstacle(x, z, w, d, 'wall', {
+    h, regionId: bd.regionOf(l.x, l.z).id, ...extra,
+  });
+  const addBeam = (x, z, w, d, h) => {
+    const o = bd.obstacle(x, z, w, d, 'beam', { h, rot: 0 });
+    return o;
+  };
+  switch (l.kind) {
+    case 'signal_tower': {
+      // 40m 桁架塔：四根斜柱 + 3 层平台 + 顶部机房（可攀爬=平台是走位掩体）
+      const H = l.height || 40;
+      const base = 7.5;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * TAU + Math.PI / 4;
+        const x = l.x + Math.cos(a) * base;
+        const z = l.z + Math.sin(a) * base;
+        addWall(x, z, 1.5, 1.5, H, { big: true });
+      }
+      for (let f = 0; f < 3; f++) {
+        const y = 10 + f * 10;
+        const r = 5.4 - f * 0.9;
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * TAU;
+          const x = l.x + Math.cos(a) * r, z = l.z + Math.sin(a) * r;
+          addWall(x, z, 2.4, 0.5, 1.0, { rot: a, floor: y });
+        }
+      }
+      addWall(l.x, l.z, 5.2, 5.2, 2.6, { big: true });
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU;
+        addCrates(bd, rng, l.x + Math.cos(a) * (base + 2.4), l.z + Math.sin(a) * (base + 2.4), 1, 1.2);
+      }
+      landmarkLoot(bd, rng, l, 7);
+      break;
+    }
+    case 'dock': {
+      // 废弃渔村码头：3 条木栈道伸向海面 + 岸边鱼市 + 船壳
+      const len = l.radius * 1.15;
+      for (let k = -1; k <= 1; k++) {
+        const rot = l.rot + k * 0.36;
+        const ox = Math.cos(rot + HALF_PI) * k * 7;
+        const oz = Math.sin(rot + HALF_PI) * k * 7;
+        buildWoodPier(bd, rng, l.x + ox, l.z + oz, rot, len * (k === 0 ? 1 : 0.78), 3.4);
+      }
+      // 鱼市棚：3 间小屋
+      for (let i = 0; i < 3; i++) {
+        const a = l.rot + Math.PI + (i - 1) * 0.5;
+        const x = l.x + Math.sin(a) * 10, z = l.z + Math.cos(a) * 10;
+        placeBuilding(bd, rng, x, z, rand(rng, 7, 9), rand(rng, 6, 8), {
+          kind: 'fishmarket', floors: 1, pad: 2.2, allowWater: true,
+        });
+      }
+      // 倒扣的船壳
+      for (let i = 0; i < 4; i++) {
+        const a = rng() * TAU, rr = rand(rng, 6, 15);
+        bd.prop(l.x + Math.cos(a) * rr, l.z + Math.sin(a) * rr, rand(rng, 4, 7), rand(rng, 1.8, 2.6), 'hull', 0x6d5a4a, 1.6);
+      }
+      for (let i = 0; i < 8; i++) {
+        const a = rng() * TAU, rr = rand(rng, 3, l.radius);
+        bd.obstacle(l.x + Math.cos(a) * rr, l.z + Math.sin(a) * rr, rand(rng, 1.0, 1.6), rand(rng, 1.0, 1.6), 'crate', { h: 1.1 });
+      }
+      landmarkLoot(bd, rng, l, 8);
+      break;
+    }
+    case 'radar_station': {
+      // 雷达站：半球罩 + 天线阵 + 机房 + 上山道路
+      const y0 = l.hill || 9;
+      addWall(l.x, l.z, 9.5, 9.5, 7.2, { big: true });
+      bd.prop(l.x, l.z, 10, 10, 'radome', 0xe4ebe4, 7.6);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * TAU + 0.4;
+        const rr = l.radius * 0.62;
+        addWall(l.x + Math.cos(a) * rr, l.z + Math.sin(a) * rr, 0.6, 0.6, 12 + (i % 3) * 3, { big: true });
+      }
+      for (let i = 0; i < 2; i++) {
+        placeBuilding(bd, rng, l.x + (i ? 13 : -13), l.z + 8, 9, 7, { kind: 'outpost', floors: 1, pad: 2.0 });
+      }
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * TAU;
+        addBarrier(bd, rng, l.x + Math.cos(a) * (l.radius * 0.55), l.z + Math.sin(a) * (l.radius * 0.55), a, 3.4);
+      }
+      landmarkLoot(bd, rng, l, 9);
+      break;
+    }
+    case 'waterfall': {
+      // 断崖瀑布：崖壁 + 上层水池 + 下层水潭 + 观景栈道
+      const cliff = l.cliff || 11;
+      const c = Math.cos(l.rot), sn = Math.sin(l.rot);
+      const edge = l.radius * 0.30;
+      for (let i = 0; i < 14; i++) {
+        const u = (i / 13 - 0.5) * l.radius * 1.7;
+        const x = l.x + c * edge + sn * u;
+        const z = l.z - sn * edge + c * u;
+        addWall(x, z, 2.6, 3.2, cliff, { big: true, rot: l.rot });
+      }
+      // 上层水池（视觉）
+      bd.prop(l.x + c * (edge + 7), l.z - sn * (edge + 7), 18, 12, 'pool', 0x6fa6ad, 0.5);
+      // 下层水潭（可走，视觉为浅水）
+      bd.waters.push({ x: l.x - c * 15, z: l.z + sn * 15, r: 8.5, kind: 'pond', solid: false });
+      bd.prop(l.x - c * 15, l.z + sn * 15, 17, 17, 'pool', 0x7fb8bd, 0.35);
+      for (let i = 0; i < 9; i++) {
+        const a = rng() * TAU, rr = rand(rng, 6, l.radius * 0.85);
+        addRock(bd, rng, l.x - c * 12 + Math.cos(a) * rr, l.z + sn * 12 + Math.sin(a) * rr, rand(rng, 1.4, 2.8), rand(rng, 1.2, 2.8));
+      }
+      for (let i = 0; i < 4; i++) {
+        bd.prop(l.x - c * (18 + i * 2.4), l.z + sn * (18 + i * 2.4), 2.6, 1.2, 'plank', 0x9a7a52, 0.22);
+      }
+      landmarkLoot(bd, rng, l, 7);
+      break;
+    }
+    case 'open_pit': {
+      // 露天矿坑：地形已下沉，这里放坑底机房、坑壁台阶与矿车轨道
+      const depth = l.depth || 20;
+      const bottom = -depth * 0.86;
+      for (let ring = 1; ring <= 3; ring++) {
+        const rr = l.radius * (ring / 4.2);
+        const n = 10 + ring * 6;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * TAU + ring * 0.3;
+          const px = l.x + Math.cos(a) * rr, pz = l.z + Math.sin(a) * rr;
+          // 地图中心留空：中央交火区不能被坑壁/台阶堵死
+          if (dist2(px, pz, 0, 0) < 20 * 20) continue;
+          addWall(px, pz, 2.4, 1.6, 1.1, { rot: a, big: false });
+        }
+      }
+      // 坑底破碎机 + 工棚（坑中心避开地图原点）
+      const cx0 = l.x, cz0 = l.z;
+      const blockedCore = dist2(cx0, cz0, 0, 0) < 22 * 22;
+      if (!blockedCore) {
+        addWall(cx0, cz0, 8.5, 8.5, 6.5, { big: true });
+        bd.prop(cx0, cz0, 9, 9, 'crusher', 0x8a6a4a, 7.2);
+      }
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * TAU;
+        addWreck(bd, rng, l.x + Math.cos(a) * 9, l.z + Math.sin(a) * 9, a);
+      }
+      // 螺旋矿车道（视觉轨枕）
+      for (let i = 0; i < 26; i++) {
+        const a = (i / 26) * TAU * 1.05 + 2.2;
+        const rr = l.radius * (0.28 + (i / 26) * 0.55);
+        bd.prop(l.x + Math.cos(a) * rr, l.z + Math.sin(a) * rr, 5.2, 0.6, 'rail', 0x5b5b5b, 0.16);
+      }
+      // 坑底高级物资
+      bd.loot(l.x, l.z, 3);
+      landmarkLoot(bd, rng, l, 10);
+      void bottom;
+      break;
+    }
+    case 'conveyor': {
+      // 传送带塔：斜向长条结构 + 支柱 + 顶端料斗
+      const len = l.radius * 1.9;
+      const ux = Math.sin(l.rot), uz = Math.cos(l.rot);
+      const px = -uz, pz = ux;
+      const H = l.height || 18;
+      for (let i = 0; i < 7; i++) {
+        const t = (i / 6 - 0.5) * len;
+        const cx = l.x + ux * t, cz = l.z + uz * t;
+        const h = 3 + (1 - Math.abs(i / 6 - 0.5) * 2) * H * 0.55;
+        for (const side of [-1, 1]) {
+          addWall(cx + px * 2.4 * side, cz + pz * 2.4 * side, 0.55, 0.55, h, { big: true });
+        }
+        if (i % 2 === 0) {
+          addBeam(cx, cz, len / 7 + 0.6, 2.2, 1.2, l.rot);
+        }
+      }
+      // 顶端料斗 + 机头
+      const hx = l.x + ux * (len * 0.42), hz = l.z + uz * (len * 0.42);
+      addWall(hx, hz, 6.5, 6.5, H, { big: true });
+      bd.prop(hx, hz, 7, 7, 'crusher', 0x7a6a52, H * 0.9);
+      for (let i = 0; i < 5; i++) addCrates(bd, rng, l.x + rand(rng, -9, 9), l.z + rand(rng, -9, 9), 2, 2.4);
+      landmarkLoot(bd, rng, l, 8);
+      break;
+    }
+    case 'shipwreck': {
+      // 沉船残骸：半埋在沙里的大船（船体 + 上层建筑 + 断桅）
+      const c = Math.cos(l.rot), sn = Math.sin(l.rot);
+      const L = 34, W = 11;
+      for (let i = 0; i < 7; i++) {
+        const t = (i / 6 - 0.5) * L;
+        const taper = 1 - Math.abs(i / 6 - 0.5) * 0.55;
+        addWall(l.x + sn * t, l.z + c * t, W * taper, 5, 4.2 + taper * 2.6, { rot: l.rot, big: true });
+      }
+      // 上层建筑
+      for (let i = 0; i < 3; i++) {
+        addWall(l.x + sn * (i * 5 - 5), l.z + c * (i * 5 - 5), 8, 7, 9.5, { rot: l.rot, big: true });
+      }
+      // 断桅
+      addWall(l.x + sn * 4, l.z + c * 4, 1.0, 1.0, 17, { big: true });
+      for (let i = 0; i < 9; i++) {
+        const a = rng() * TAU, rr = rand(rng, 6, l.radius);
+        addWreck(bd, rng, l.x + Math.cos(a) * rr, l.z + Math.sin(a) * rr, rand(rng, 0, TAU));
+      }
+      bd.prop(l.x, l.z, 12, 6, 'hull', 0x5d6663, 5.2);
+      landmarkLoot(bd, rng, l, 10);
+      break;
+    }
+    case 'derrick': {
+      // 钻井平台：四层钢架 + 平台甲板 + 储罐 + 管线
+      const H = l.height || 22;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * TAU + Math.PI / 4;
+        const x = l.x + Math.cos(a) * 6.4, z = l.z + Math.sin(a) * 6.4;
+        addWall(x, z, 1.1, 1.1, H, { big: true });
+      }
+      for (let f = 0; f < 4; f++) {
+        const y = 5.5 + f * 5;
+        const r = 6.0 - f * 0.55;
+        for (let i = 0; i < 4; i++) {
+          const a = (i / 4) * TAU + Math.PI / 4;
+          addWall(l.x + Math.cos(a) * r, l.z + Math.sin(a) * r, 4.4, 0.55, 0.8, { rot: a, floor: y });
+        }
+      }
+      addWall(l.x, l.z, 5.5, 5.5, H * 0.55, { big: true });
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * TAU + 0.7;
+        bd.prop(l.x + Math.cos(a) * 12, l.z + Math.sin(a) * 12, 4.5, 4.5, 'tank', 0xb7a58a, 5.5);
+        bd.obstacle(l.x + Math.cos(a) * 12, l.z + Math.sin(a) * 12, 4.4, 4.4, 'container', { h: 5.5 });
+      }
+      for (let i = 0; i < 6; i++) {
+        const a = rng() * TAU, rr = rand(rng, 8, l.radius);
+        bd.prop(l.x + Math.cos(a) * rr, l.z + Math.sin(a) * rr, rand(rng, 6, 12), 0.7, 'pipe', 0x9a8a6a, 0.7);
+      }
+      landmarkLoot(bd, rng, l, 9);
+      break;
+    }
+    case 'container_maze': {
+      // 集装箱迷宫：成排堆叠 1–3 层，留出可通行走廊
+      const cell = 8.4;
+      const cols = 5, rows = 5;
+      for (let cx = 0; cx < cols; cx++) {
+        for (let cz = 0; cz < rows; cz++) {
+          // 走廊：每隔一行留空
+          if (cx % 2 === 1) continue;
+          if (rng() < 0.18) continue;
+          const x = l.x + (cx - (cols - 1) / 2) * cell + rand(rng, -0.4, 0.4);
+          const z = l.z + (cz - (rows - 1) / 2) * cell + rand(rng, -0.4, 0.4);
+          const stack = rng() < 0.3 ? 3 : rng() < 0.55 ? 2 : 1;
+          const rot = rng() < 0.5 ? 0 : HALF_PI;
+          for (let s = 0; s < stack; s++) {
+            const o = addContainer(bd, rng, x, z, rot, { h: 2.7, stack: s });
+            if (o && s > 0) o.stacked = s;
+          }
+          if (rng() < 0.4) bd.loot(x, z, rng() < 0.45 ? 3 : 2);
+        }
+      }
+      // 迷宫外围护栏
+      for (let i = 0; i < 14; i++) {
+        const a = (i / 14) * TAU;
+        addBarrier(bd, rng, l.x + Math.cos(a) * (l.radius * 0.95), l.z + Math.sin(a) * (l.radius * 0.95), a, 3.6);
+      }
+      landmarkLoot(bd, rng, l, 10);
+      break;
+    }
+    case 'lighthouse': {
+      // 灯塔：视觉塔身由 client/models.js 的 createLandmark('lighthouse') 提供。
+      // 这里只留「细核心」碰撞柱，避免再生成一根 6.4m 粗的实心墙把塔糊成黑柱。
+      const H = l.height || 34;
+      addWall(l.x, l.z, 2.2, 2.2, H, { big: true });
+      // 底座附属房
+      placeBuilding(bd, rng, l.x + 10, l.z - 6, 8, 6, { kind: 'outpost', floors: 1, pad: 2.0 });
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU;
+        addRock(bd, rng, l.x + Math.cos(a) * (l.radius * 0.85), l.z + Math.sin(a) * (l.radius * 0.85), rand(rng, 1.4, 2.6), rand(rng, 1.2, 2.6));
+      }
+      for (let i = 0; i < 4; i++) addCrates(bd, rng, l.x + rand(rng, -8, 8), l.z + rand(rng, -8, 8), 2, 2.2);
+      landmarkLoot(bd, rng, l, 8);
+      break;
+    }
+    case 'bridge': {
+      // 跨海大桥断段：两截桥面 + 斜拉索塔 + 断口
+      const len = l.radius * 1.9;
+      const ux = Math.sin(l.rot), uz = Math.cos(l.rot);
+      const px = -uz, pz = ux;
+      const W = 9;
+      const segs = 11;
+      for (let i = 0; i < segs; i++) {
+        const t = (i / (segs - 1) - 0.5) * len;
+        // 中间 2 跨断开（断口）
+        const gap = Math.abs(i - (segs - 1) / 2) < 1.2;
+        if (gap) {
+          // 断口两侧的断梁
+          if (Math.abs(i - (segs - 1) / 2) > 0.6) {
+            const cx = l.x + ux * t, cz = l.z + uz * t;
+            for (let k = 0; k < 3; k++) {
+              const off = (k - 1) * 2.8;
+              addWall(cx + px * off, cz + pz * off, 2.2, W / 3, 1.0, { rot: l.rot, big: true });
+            }
+          }
+          continue;
+        }
+        const cx = l.x + ux * t, cz = l.z + uz * t;
+        // 桥面（双侧护栏，中间可走）
+        for (const side of [-1, 1]) {
+          addWall(cx + px * (W * 0.5) * side, cz + pz * (W * 0.5) * side, 4.6, 0.8, 1.15, { rot: l.rot });
+        }
+        bd.prop(cx, cz, 8.6, len / segs + 0.4, 'deck', 0x8b8f8a, 0.5);
+        if (i % 3 === 1) {
+          for (const side of [-1, 1]) {
+            addWall(cx + px * (W * 0.62) * side, cz + pz * (W * 0.62) * side, 1.0, 1.0, 16, { big: true });
+          }
+        }
+      }
+      // 斜拉索塔
+      for (let i = 0; i < 2; i++) {
+        const t = (i ? 1 : -1) * len * 0.28;
+        const cx = l.x + ux * t, cz = l.z + uz * t;
+        for (const side of [-1, 1]) {
+          addWall(cx + px * (W * 0.7) * side, cz + pz * (W * 0.7) * side, 1.6, 1.6, 26, { big: true });
+        }
+      }
+      landmarkLoot(bd, rng, l, 8);
+      break;
+    }
+    case 'warehouse': {
+      // 大跨度仓库群：3 间厂房 + 内部隔墙（多房间）
+      for (let i = 0; i < 3; i++) {
+        const x = l.x + (i - 1) * 17;
+        const z = l.z + (i % 2 ? 10 : -9);
+        addHall(bd, rng, x, z, 15, 12, { kind: 'warehouse', floors: 1, pad: 2.4, doorWidth: 6.2 });
+        // 内部隔墙（留 3m 通道）
+        addWall(x - 3.6, z, 0.5, 7.5, 3.4);
+        addWall(x + 4.2, z, 0.5, 5.5, 3.4);
+      }
+      // 装卸平台 + 集装箱
+      for (let i = 0; i < 6; i++) {
+        const x = l.x + rand(rng, -22, 22);
+        const z = l.z + rand(rng, -18, 18);
+        if (bd.nearSolid(x, z, 2.6)) continue;
+        addContainer(bd, rng, x, z, rng() < 0.5 ? 0 : HALF_PI);
+      }
+      for (let i = 0; i < 8; i++) {
+        addBarrier(bd, rng, l.x + rand(rng, -l.radius, l.radius), l.z + rand(rng, -l.radius, l.radius), rand(rng, 0, TAU), 3.4);
+      }
+      landmarkLoot(bd, rng, l, 12);
+      break;
+    }
+    default:
+      landmarkLoot(bd, rng, l, 5);
+      break;
+  }
+}
+
+/** 带缺口的环形岩带（用于斜坡通道）。 */function rockRingSkip(bd, rng, cx, cz, radius, count, thick, gapWidth) {
   for (let i = 0; i < count; i++) {
     const a = (i / count) * TAU;
     let da = a - 0.35;
@@ -1396,6 +2196,17 @@ function worldStats(def, bd) {
   for (let i = 0; i < bd.lootSpots.length; i++) tiers[bd.lootSpots[i].tier]++;
   let tileSum = 0;
   for (let i = 0; i < bd.buildings.length; i++) tileSum += bd.buildings[i].w * bd.buildings[i].d;
+  // 地标签名：数量 + 每类计数（可区分「地标种类」而不是只看总数）
+  const lmKinds = {};
+  for (let i = 0; i < bd.landmarks.length; i++) {
+    const k = bd.landmarks[i].kind;
+    lmKinds[k] = (lmKinds[k] || 0) + 1;
+  }
+  const zones = {};
+  for (let i = 0; i < bd.regions.length; i++) {
+    const z = bd.regions[i].zone || 'wild';
+    zones[z] = (zones[z] || 0) + 1;
+  }
   return {
     mapId: def.id,
     buildings: bd.buildings.length,
@@ -1411,7 +2222,11 @@ function worldStats(def, bd) {
     kinds,
     lootTiers: { tier1: tiers[1], tier2: tiers[2], tier3: tiers[3] },
     buildingArea: Math.round(tileSum),
-    signature: `${bd.buildings.length}/${bd.obstacles.length}/${bd.waters.length}/${bd.roads.length}/${kinds.container || 0}/${kinds.rock || 0}`,
+    landmarks: bd.landmarks.length,
+    landmarkKinds: lmKinds,
+    zones,
+    // 签名：建筑/障碍/水域/道路 + 地标数 + 集装箱/岩石（三图必须彼此可区分）
+    signature: `${bd.buildings.length}/${bd.obstacles.length}/${bd.waters.length}/${bd.roads.length}/lm${bd.landmarks.length}/c${kinds.container || 0}/r${kinds.rock || 0}`,
   };
 }
 
@@ -1430,8 +2245,9 @@ function assembleWorld(def, bd) {
     }
     return true;
   };
-  const collision = makeCollision(bd.obstacles, insideLand);
   const bounds = { minX: -radius - 4, maxX: radius + 4, minZ: -radius - 4, maxZ: radius + 4 };
+  // 先出陆地占位（水域语义），碰撞闭包只依赖障碍+陆地，不依赖地形；地形后建一次
+  const collision = makeCollision(bd.obstacles, insideLand);
   const world = {
     id: def.id,
     def,
@@ -1482,12 +2298,34 @@ function assembleWorld(def, bd) {
       }
       return best;
     },
+    // 高度场（地形层次）：±5m 低频噪声，建筑/道路/水域压平，地标造型叠加
+    heightAt(x, z) { return 0; },
+    slopeAt() { return 0; },
+    terrain: null,
   };
+  // 地形只算一次（≈37×37m 格网），然后重建带坡度的碰撞/导航
+  const terrain = makeTerrain(def, world);
+  world.terrain = terrain;
+  world.heightAt = terrain.heightAt;
+  world.slopeAt = terrain.slopeAt;
+  const collisionT = makeCollision(bd.obstacles, insideLand, terrain);
+  world.blocked = collisionT.blocked;
+  world.moveBody = collisionT.moveBody;
+  world.wallDistance = collisionT.wallDistance;
+  world.clearLine = collisionT.clearLine;
+  world.stepElevation = collisionT.stepElevation;
+  // 地标对象补齐元数据（id/radius/tier），供客户端与测试消费
+  for (let i = 0; i < bd.landmarks.length; i++) {
+    const l = bd.landmarks[i];
+    if (l.id == null) l.id = `${def.id}_${l.kind}_${i}`;
+    if (l.radius == null) l.radius = l.r || 10;
+    if (l.tier == null) l.tier = 2;
+    if (l.name == null) l.name = l.label || l.kind;
+  }
   world.nav = buildNav(world);
   world.stats = worldStats(def, bd);
   return world;
 }
-
 /** 生成指定地图（不缓存）。timings 可选：若传入对象，会写入各阶段耗时（ms）。 */
 export function makeWorldUncached(mapId, timings = null) {
   const now = () => (timings ? Date.now() : 0);
@@ -1502,13 +2340,26 @@ export function makeWorldUncached(mapId, timings = null) {
   const bd = new Builder(def);
   const rng = bd.rng;
   applyWaters(bd, def);
+  registerLandmarks(bd, def);
   for (let i = 0; i < (def.roads || []).length; i++) {
     const rd = def.roads[i];
     addRoad(bd, rd.x, rd.z, rd.w, rd.d, rd.rot || 0, rd.kind === 'rail' ? 'dirt' : (rd.kind === 'highway' ? 'asphalt' : 'dirt'));
   }
   for (let i = 0; i < bd.regions.length; i++) buildRegion(bd, rng, bd.regions[i]);
   applyThemeFeatures(bd, rng, def);
+  // 地标本体（在补白之前：先把核心区做实，野外补白自然会绕开）
+  // 只构建 def 里声明的「主地标」（hero）；风车/吊机等装饰性 landmark 不生成固定形态
+  for (let i = 0; i < bd.landmarks.length; i++) {
+    const lm = bd.landmarks[i];
+    if (lm.built || !lm.hero) continue;
+    lm.built = true;
+    buildLandmark(bd, rng, lm);
+    // 清场：地标本体范围内不长树（否则锥形树会插进塔身/船体，读感变糊）
+    clearLandmarkArea(bd, lm, 1.5);
+  }
   fillWilderness(bd, rng, def);
+  // 中心交火区净空（岩石硬掩体）：中心检查站必须留出四向射界
+  clearCenterHardCover(bd);
   fillCars(bd, rng);
   fillAnchors(bd, rng);
   bd.commitTrees();

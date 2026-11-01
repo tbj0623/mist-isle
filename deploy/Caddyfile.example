@@ -1,4 +1,109 @@
-# Replace game.example.com with a domain pointing at your server.
+# 雾岛突围 / MIST ISLE 生产部署示例（两种方式二选一）
+#
+# ── 方式 A（推荐）：Caddy 反代终止 TLS，游戏服务保持 HTTP ─────────────────────
+# 服务端按默认方式启动（不设 TLS_CERT/TLS_KEY），由 Caddy 处理证书续期。
+#
+# 反代必读（P0）：
+#   服务端用 req.socket.remoteAddress 做「每 IP 并发连接配额」（MAX_CONN_PER_IP，默认 8），
+#   也用它写日志。Caddy 反代之后所有客户端在服务端眼里都是 127.0.0.1 —— 单 IP 配额被
+#   全体玩家共享，**第 9 个玩家开始永久 429**，且日志里分不清谁是谁。
+#   部署时必须同时做两件事：
+#     1. 给游戏进程设置 TRUST_PROXY=1（见 .env.example），让它采信代理转发的真实来源；
+#     2. 在 Caddy 侧用 trusted_proxies 限定哪些来源的 X-Forwarded-For 可以被信任
+#        （下面的 reverse_proxy 块已配置 private_ranges；Caddy 2.7+ 默认即如此，
+#        显式写出是为了升级后默认值变化时不至于静默失效）。
+#   临时应急：把 MAX_CONN_PER_IP 提到 32（CGNAT 下 8 本来就容易误伤），但这只是缓解，
+#   不解决「所有人共用一个 IP」的问题 —— 配额打满时全服都进不来。
+#
+#   另外 ALLOWED_ORIGINS 要设成站点地址（反代后浏览器 Origin 是站点域名），
+#   例如 ALLOWED_ORIGINS=https://game.example.com。
+#
+# ── 方式 B：服务端原生 TLS / WSS ─────────────────────────────────────────────
+# 先签发证书（例如 certbot certonly --standalone -d game.example.com），再启动服务：
+#   TLS_CERT=/etc/letsencrypt/live/game.example.com/fullchain.pem \
+#   TLS_KEY=/etc/letsencrypt/live/game.example.com/privkey.pem \
+#   ALLOWED_ORIGINS=https://game.example.com node server/index.mjs
+# 服务将以 node:https 监听 8787（ws 自动升级为 wss），此时 Caddy 只做 TCP/HTTP 透传
+# 或直接用防火墙开放 8787；两个变量只设其一会被视为配置错误并拒绝启动。
+# Docker 部署时 HEALTHCHECK 会跟随 TLS_CERT 自动切到 https，无需额外配置。
+
+# 替换成你自己的域名与邮箱（邮箱用于 ACME 到期通知）
+{
+	email admin@example.com
+
+	# 全局可信代理：决定 Caddy 怎么解析「客户端真实 IP」（client_ip 匹配器与
+	# 转发给上游的 X-Forwarded-For 都依赖它）。默认不信任任何代理。
+	# 若你在 Caddy 前面还有一层云负载均衡 / CDN，把它的回源网段写在这里，
+	# 否则所有玩家都会被当成那台 LB 的 IP。只直连 Caddy 时 private_ranges 已经够用。
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 game.example.com {
-    reverse_proxy 127.0.0.1:8787
+	# ── 压缩 ────────────────────────────────────────────────────────────────
+	# Node 侧对静态资源已开 brotli，但反代之后 Caddy 更适合统一处理：
+	# zstd 优先（现代浏览器体积最小），gzip 兜底老客户端。
+	encode zstd gzip
+
+	# ── 安全响应头 ──────────────────────────────────────────────────────────
+	# HSTS：一年 + 子域 + preload。启用前确认全站（含子域）都能走 https，否则回滚很慢。
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		# 游戏不需要被任何第三方页面嵌入
+		Cross-Origin-Opener-Policy "same-origin"
+		# 去掉 Caddy 默认的 Server 头
+		-Server
+	}
+
+	# ── 内网限制：/stats 与 /metrics ─────────────────────────────────────────
+	# 这两个端点暴露进程内存、房间数、连接数等运行数据，公网不需要。
+	# 非私网来源一律 404（而不是 403）：不确认端点存在，降低探测价值。
+	# 监控采集器若不在私网（如云厂商托管 Prometheus），把 private_ranges 换成它的出口网段。
+	# 注意用 client_ip 而非 remote_ip：前者配合 trusted_proxies 解析出的真实客户端地址，
+	# 将来在前面再挂一层负载均衡时不用改。
+	@ops {
+		path /stats /metrics
+		not client_ip private_ranges
+	}
+	respond @ops 404
+
+	# ── 反代 ────────────────────────────────────────────────────────────────
+	reverse_proxy 127.0.0.1:8787 {
+		# 只信任来自私网/回环的 X-Forwarded-For 头；其他来源的同名头一律忽略，
+		# 防止客户端直连 Caddy 时伪造来源 IP 绕过每 IP 配额。
+		# 与上面的 servers > trusted_proxies 同义，这里再写一遍是双保险：
+		# Caddy 官方也建议两处都配（前者管 client_ip 匹配器，后者管上游转发）。
+		trusted_proxies private_ranges
+
+		# ── WebSocket 优雅关闭（关键）───────────────────────────────────────
+		# Caddy 默认在 reload / 停止时**立刻强制关闭**所有连接，而默认延迟为 0。
+		# 对局全部走 WebSocket，于是每次 reload（改一行配置、证书续期触发）
+		# 都会把所有进行中的对局直接断掉。10 分钟的关闭窗口让旧连接自然结束，
+		# 新连接立刻走新配置。注意它属于 reverse_proxy 的 streaming 选项，
+		# 不是全局选项 —— 写在站点块顶层会被 Caddy 拒绝加载。
+		stream_close_delay 10m
+
+		# WebSocket 升级头（Upgrade / Connection）与 X-Forwarded-Proto / -Host / -For
+		# 都由 Caddy 默认转发，无需手写 header_up（写了 caddy validate 会提示多余）。
+
+		# 上游健康探测（可选）：对局连接是长连接，跨房间的断开不影响整体，
+		# 这里只探活 HTTP 端口本身。启用后 Caddy 会把不健康的上游踢出轮询。
+		# health_uri /health
+		# health_interval 30s
+	}
+
+	# 静态资源由 Node 托管（dist/ 打包进镜像），不需要额外 file_server。
+	# 访问日志：排查「谁被 429」时是唯一线索，生产建议保留。
+	log {
+		output file /var/log/caddy/mistisle-access.log {
+			roll_size 100MiB
+			roll_keep 10
+		}
+		format json
+	}
 }

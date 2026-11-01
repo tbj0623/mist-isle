@@ -2,7 +2,7 @@
 // 全对象池：几何/材质在构造期一次创建，运行时只写矩阵与颜色；禁止每帧 new 几何体。
 // 粒子总量受 quality 控制；不使用 Math.random（内部确定性 LCG，粒子可复现）。
 import * as THREE from 'three';
-import { UNIT_BOX, UNIT_CYL, UNIT_SPHERE, UNIT_CIRCLE } from './models.js';
+import { UNIT_BOX, UNIT_SPHERE, UNIT_CIRCLE } from './models.js';
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3();
 const _s = new THREE.Vector3(), _c = new THREE.Color(), _v = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
@@ -123,14 +123,24 @@ class PointsPool {
   clear() { this.active = 0; this.mesh.geometry.setDrawRange(0, 0); this.mesh.visible = false; }
 }
 
-/** 独立网格池：枪口火光/曳光/冲击环/爆炸球/护盾等需要各自透明度的效果。 */
+/**
+ * 独立网格池：枪口火光/曳光/冲击环/爆炸球/护盾等需要各自透明度的效果。
+ *
+ * ⚠ forceSinglePass 必须显式打开。
+ * three r180 的 WebGLRenderer 在 `transparent === true && side === DoubleSide &&
+ * forceSinglePass !== true` 时会**先画背面再画正面**（两趟，draw call ×2）。
+ * 这里的所有特效都是不透明感的光斑/球/环，双面只是为了让相机从任何角度都能看到，
+ * 并不是真的需要"背面先画一次"的排序；开单趟后背面直接不画（FrontSide 语义），
+ * 对 Point 状光斑视觉无差别。实测特效密集帧 draw call 159 → 102。
+ */
 class MeshPool {
-  constructor(scene, geometry, count, additive, blendOpacity = 0.85) {
+  constructor(scene, geometry, count, additive, blendOpacity = 0.85, singlePass = true) {
     this.items = [];
     for (let i = 0; i < count; i++) {
       const material = new THREE.MeshBasicMaterial({
         color: 0xffffff, transparent: true, opacity: blendOpacity, depthWrite: false,
         blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, side: THREE.DoubleSide,
+        forceSinglePass: singlePass,
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.visible = false; mesh.frustumCulled = false;
@@ -302,7 +312,8 @@ export class Fx {
     return it;
   }
   tracer(ax, az, bx, bz, color = 0xffd98a, y = 1.05) {
-    const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz);
+    // sqrt 而非 hypot：曳光每发一颗，hypot 的溢出保护/参数归一化在这里纯属浪费
+    const dx = bx - ax, dz = bz - az, len = Math.sqrt(dx * dx + dz * dz);
     if (len < 0.02) return null;
     const it = this.tracers.take();
     it.kind = 'tracer'; it.life = 0.11; it.maxLife = 0.11; it.from = 0.055; it.opacity = 0.9;
@@ -416,7 +427,9 @@ export class Fx {
   /* ---------------- 区域型特效：烟雾 / 火焰（跟随快照 ttl，不新建几何） ---------------- */
   makeZoneMesh() {
     const geometry = new THREE.SphereGeometry(1, 12, 8);
-    const material = new THREE.MeshBasicMaterial({ color: 0xd6d9cc, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
+    // 烟雾/火焰是球体罩子，单趟即可（同 MeshPool 的注释）：双趟没有任何观感收益，
+    // 只让每个区域火焰多一次 draw call。
+    const material = new THREE.MeshBasicMaterial({ color: 0xd6d9cc, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.visible = false; mesh.frustumCulled = false;
     this.scene.add(mesh);

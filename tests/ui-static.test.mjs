@@ -52,7 +52,9 @@ test('bundle 体积在合理区间（未压缩 < 400KB，压缩后 > 8KB）', ()
 
 // ── 2. 不用 innerHTML 拼 DOM ────────────────────────────────────────────────
 test('禁用 innerHTML 赋值（允许 0 处）', () => {
-  for (const file of [SCREENS, HUD]) {
+  // main.js 也纳入扫描：它是首个渲染入口，启动失败时的错误面板最容易
+  // 为了省事写成 innerHTML 拼串（历史上确实有 2 处）。
+  for (const file of [SCREENS, HUD, 'client/main.js']) {
     const src = read(file);
     const assignments = [...src.matchAll(/\.innerHTML\s*=/g)].length;
     const outer = [...src.matchAll(/\.outerHTML\s*=/g)].length;
@@ -147,6 +149,33 @@ test('ui-hud 导出契约 API', async () => {
   ];
   for (const name of required) assert.equal(typeof mod[name], 'function', `缺少导出 ${name}`);
   assert.equal(mod.default, undefined, '不应有 default 导出');
+});
+
+test('ui-hud 导出 main.js 消费的事件级 API（hudChat/hudHit/hudDamage/hudFlash/hudZone/hudBase）', async () => {
+  const mod = await import(`../${HUD}`);
+  for (const name of ['hudChat', 'hudHit', 'hudDamage', 'hudFlash', 'hudZone', 'hudBase']) {
+    assert.equal(typeof mod[name], 'function', `main.js 调用但缺少导出：${name}`);
+  }
+  // 事件级 API 必须内部 try/catch 容错（不能把异常抛给主循环）
+  const src = read(HUD);
+  for (const name of ['hudChat', 'hudHit', 'hudDamage', 'hudFlash', 'hudZone', 'hudBase']) {
+    const start = src.indexOf(`export function ${name}`);
+    assert.ok(start > 0, `未找到 ${name} 定义`);
+    // 取样窗口取到「下一个 export 或文件末尾」为止，而不是写死 1600 字符。
+    // 写死长度会让「函数体正常增长」变成「看起来没有 try/catch」的假失败
+    // （1.3.0 给 hudChat 补聊天面板历史后就踩到了）。
+    const nextExport = src.indexOf('\nexport ', start + 1);
+    const end = nextExport > start ? nextExport : Math.min(src.length, start + 8000);
+    const block = src.slice(start, end);
+    assert.match(block, /catch\s*\(/, `${name} 应用 try/catch 容错`);
+  }
+});
+
+test('ui-screens 导出 main.js 使用的辅助 API', async () => {
+  const mod = await import(`../${SCREENS}`);
+  for (const name of ['closeTopDialog', 'getNickname', 'hideAllDialogs', 'isAnyDialogOpen', 'getActiveScreen']) {
+    assert.equal(typeof mod[name], 'function', `缺少导出 ${name}`);
+  }
 });
 
 // ── 5. 代码风格与性能约定 ───────────────────────────────────────────────────

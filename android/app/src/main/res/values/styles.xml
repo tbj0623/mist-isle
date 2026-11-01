@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="GameTheme" parent="android:style/Theme.Material.NoActionBar">
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      NoActionBar + 全屏：真正的沉浸式由 MainActivity 的 WindowInsetsControllerCompat 完成，
+      这里只保证首帧（WebView 还没画出来之前）就是游戏底色，不闪白。
+
+      minSdk 是 26，而 windowLightNavigationBar 与 windowLayoutInDisplayCutoutMode 都是
+      API 27 才引入的。用 tools:targetApi="27" 标注：低版本系统会直接忽略这两个未知属性
+      （不崩溃、不影响其余样式），拆 values-v27/ 会让同一份配色维护两遍，不划算。
+    -->
+    <style name="GameTheme" parent="android:style/Theme.Material.NoActionBar" tools:targetApi="27">
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
@@ -8,5 +16,8 @@
         <item name="android:navigationBarColor">#152C2D</item>
         <item name="android:windowBackground">#152C2D</item>
         <item name="android:colorAccent">#EFBD72</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
     </style>
 </resources>

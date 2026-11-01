@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   xpForLevel, levelFromXp, rankFor, ratingDelta, computeRewards, dayKey, weekKey,
-  pickDaily, pickWeekly, missionProgress, matchSummaryFromState, emptyMeta, MAX_LEVEL,
+  pickDaily, pickWeekly, missionProgress, matchSummaryFromState, emptyMeta, MAX_LEVEL, RATING,
   protectRating, SAVE_KEY,
 } from '../shared/progression.mjs';
 import { DAILY_POOL, WEEKLY_POOL, MISSION_METRICS, ALL_MISSIONS } from '../shared/data/missions.mjs';
@@ -15,6 +15,7 @@ import { Meta, MemoryStorage } from '../client/meta.js';
 
 const storage = () => new MemoryStorage();
 const newMeta = () => new Meta(storage());
+const metricSet = new Set(MISSION_METRICS);
 const summary = (over = {}) => ({
   mode: 'squad', mapId: 'qinglan', won: false, placement: 32, totalTeams: 64,
   kills: 3, assists: 1, damage: 520, damageTaken: 300, survived: 150,
@@ -90,7 +91,21 @@ test('ratingDelta：吃鸡加分、垫底扣分、连败有保护、horde 有分
   assert.ok(win > ratingDelta({ won: false, placement: 8, totalTeams: 16, kills: 0, damage: 0, mode: 'squad' }));
   const protect = ratingDelta({ won: false, placement: 16, totalTeams: 16, kills: 0, damage: 0, mode: 'squad', lossStreak: 4 });
   assert.ok(protect > last, '连败保护应减少掉分');
-  assert.ok(protect >= -7);
+  // 1.2.1 平衡：连败保护从「所有负分压到 -7」改为「深负分托底到 -34」。
+  // 旧断言 `protect >= -7` 正是段位通胀的成因：随机玩家每局最多亏 7 分，
+  // 而 1/16 概率吃鸡就 +60，均匀期望恒为正（实测 +4.63/局，713 局上传奇）。
+  // 新语义下护盾只把 -45 的垫底分收到 -34（≈25% 缓冲），仍保留「不跌破大段位下限」。
+  assert.ok(protect >= RATING.streakShieldCap, `连败保护下限 ${RATING.streakShieldCap}`);
+  assert.ok(protect > RATING.lossFloor, '连败保护不应低于普通垫底');
+  // 均匀名次期望必须为负：段位是技术分层，不是参与奖。
+  // 口径与实测一致：16 队名次各 1/16，典型随机玩家 = 1 杀 + 250 伤害
+  // （旧参数下该口径的期望是 +4.63/局，即 713 局上传奇的那条曲线）。
+  const typical = { totalTeams: 16, mode: 'squad', kills: 1, damage: 250 };
+  let sum = 0;
+  for (let p = 1; p <= 16; p++) sum += ratingDelta({ ...typical, placement: p, won: p === 1 });
+  const mean = sum / 16;
+  assert.ok(mean < 0, `均匀名次期望必须为负，实际 ${mean.toFixed(2)}`);
+  assert.ok(mean >= -12 && mean <= -8, `均匀名次期望应落在 -8 ~ -12，实际 ${mean.toFixed(2)}`);
   assert.equal(ratingDelta({ mode: 'training', placement: 5, totalTeams: 16 }), 0);
   assert.ok(ratingDelta({ mode: 'horde', hordeWaves: 5, kills: 20 }) > 0);
   const r = protectRating(250, -60, 5); // 青铜段位下限保护
@@ -98,20 +113,28 @@ test('ratingDelta：吃鸡加分、垫底扣分、连败有保护、horde 有分
   assert.ok(demotionShield(250, 3).active); assert.equal(demotionShield(250, 1).active, false);
 });
 
-test('pickDaily/pickWeekly：同 key 稳定、不同 key 不同、返回 3 条且 id 在池内', () => {
+test('pickDaily/pickWeekly：同 key 稳定、不同 key 不同、6/4 条且维度互不重复', () => {
   for (const pool of [DAILY_POOL, WEEKLY_POOL]) {
     const ids = new Set();
     for (let i = 0; i < 9; i++) { assert.ok(pool.length >= 10); for (const m of pool) ids.add(m.id); }
     assert.ok(ids.size >= 10);
   }
   const a = pickDaily('2026-10-18'), b = pickDaily('2026-10-18'), c = pickDaily('2026-10-19');
-  assert.deepEqual(a, b); assert.equal(a.length, 3);
+  assert.deepEqual(a, b); assert.equal(a.length, 6);
   assert.notDeepEqual(a, c);
+  assert.equal(new Set(a).size, 6, '同一天不能出现重复任务');
   for (const id of a) assert.ok(DAILY_POOL.some(m => m.id === id));
   const weekly = pickWeekly('2026-W42');
-  assert.equal(weekly.length, 3); assert.notDeepEqual(weekly, pickWeekly('2026-W43'));
+  assert.equal(weekly.length, 4); assert.notDeepEqual(weekly, pickWeekly('2026-W43'));
   for (const id of weekly) assert.ok(WEEKLY_POOL.some(m => m.id === id));
-  assert.ok(MISSION_METRICS.every(m => ['kills', 'wins', 'matches', 'damage', 'survived', 'revives', 'pickups', 'headshots', 'vehicles', 'hordeWaves', 'placementTop3', 'accuracyShots', 'downs'].includes(m)));
+  // 维度轮换：连续 30 天里，每日 6 条必须来自 6 个不同 dimension
+  for (let i = 0; i < 30; i++) {
+    const day = dayKey(new Date(2026, 0, 1 + i));
+    const dims = pickDaily(day).map(id => ALL_MISSIONS[id].dimension);
+    assert.equal(new Set(dims).size, dims.length, `${day} 出现重复维度 ${dims}`);
+  }
+  assert.ok(MISSION_METRICS.every(m => metricSet.has(m)), 'MISSION_METRICS 必须是受支持集合的子集');
+  assert.ok(MISSION_METRICS.includes('killsPistol') && MISSION_METRICS.includes('winsBaiye'));
 });
 
 test('dayKey/weekKey 格式与周界正确', () => {
@@ -176,14 +199,58 @@ test('matchSummaryFromState 从快照得到 kills/damage/placement/won', () => {
   assert.equal(self.kills, 6);
 });
 
-test('emptyMeta 初始存档结构符合契约 §9', () => {
+test('爆头三种来源都能统计（shot.headshots / headshot 事件 / 旧 hit.headshot）', () => {
+  const base = {
+    v: 3, mode: 'squad', mapId: 'chisha', phase: 'ended', matchTime: 200,
+    me: { id: 'p1', team: 2, kills: 2, damage: 300, alive: true, rank: 3, weapon: 'ar7' },
+    counts: { teams: 16 }, horde: null,
+    result: { winnerTeam: 2, winnerName: '曙光', reason: 'squad', ranks: [{ team: 2, name: '曙光', rank: 1, players: [] }] },
+  };
+  // 1) simulation 主路径：shot 事件的 headshots 计数（霰弹一发可 >1）
+  const viaShot = matchSummaryFromState({
+    ...base,
+    events: [
+      { type: 'shot', player: 'p1', hit: 'b9', headshots: 2 },
+      { type: 'shot', player: 'p1', hit: null, headshots: 0 },
+      { type: 'shot', player: 'p2', hit: 'p1', headshots: 1 },
+    ],
+  }, 'p1');
+  assert.equal(viaShot.headshots, 2, 'shot.headshots 应被统计，且只统计自己的开火');
+  // 2) 独立 headshot 事件
+  const viaEvent = matchSummaryFromState({
+    ...base,
+    events: [{ type: 'headshot', player: 'p1', target: 'b9', damage: 88 }, { type: 'headshot', player: 'p1', target: 'b8', damage: 44 }],
+  }, 'p1');
+  assert.equal(viaEvent.headshots, 2, 'headshot 事件应被统计');
+  // 3) 旧快照兼容：hit.headshot
+  const viaHit = matchSummaryFromState({
+    ...base,
+    events: [{ type: 'hit', player: 'p1', target: 'b9', damage: 40, headshot: true }],
+  }, 'p1');
+  assert.equal(viaHit.headshots, 1, '旧 hit.headshot 标记应继续生效');
+  // 4) shot.headshots 与 headshot 事件是同一次要害命中的两个通道，不得双计
+  const mixed = matchSummaryFromState({
+    ...base,
+    events: [{ type: 'shot', player: 'p1', hit: 'b9', headshots: 1 }, { type: 'headshot', player: 'p1', target: 'b9', damage: 70 }],
+  }, 'p1');
+  assert.equal(mixed.headshots, 1, '同一次要害命中只计一次（两通道取 max 去重）');
+});
+
+
+test('emptyMeta 初始存档结构符合契约 §9（v2）', () => {
   const m = emptyMeta();
-  assert.equal(m.version, 1); assert.equal(m.level, 1); assert.equal(m.xp, 0);
+  assert.equal(m.version, 2); assert.equal(m.level, 1); assert.equal(m.xp, 0);
   assert.ok(Array.isArray(m.unlocked.skins) && m.unlocked.skins.length >= 3);
   assert.equal(m.loadout.primary, 'ar7'); assert.equal(m.loadout.skin, 'skin_default');
   for (const key of ['matches', 'wins', 'kills', 'damage', 'survived', 'bestPlacement', 'streak', 'bestStreak', 'hordeWaves']) {
     assert.equal(typeof m.stats[key], 'number');
   }
+  // v2 新增字段：任务链与统计扩展
+  assert.deepEqual(Object.keys(m.streak).sort(), ['best', 'claimed', 'count', 'day', 'lastRewardDay']);
+  for (const key of ['airdrops', 'dodges', 'throwHits', 'attachments', 'dismantles', 'vehicleMeters', 'crouchKills', 'nightWins', 'skinsOwned']) {
+    assert.equal(typeof m.stats[key], 'number', `stats.${key} 必须是数字`);
+  }
+  assert.equal(typeof m.stats.wonMaps, 'object');
   assert.deepEqual(Object.keys(m.missions).sort(), ['daily', 'day', 'week', 'weekly']);
   assert.equal(typeof m.settings, 'object');
 });
@@ -192,7 +259,7 @@ test('Meta：新档初始 + addMatchResult 结算 xp/credits/level/rating/stats'
   const meta = newMeta();
   assert.equal(meta.level, 1); assert.equal(meta.credits, emptyMeta().credits);
   assert.deepEqual(meta.loadout.primary, 'ar7');
-  assert.equal(meta.missionList('daily').length, 3);
+  assert.equal(meta.missionList('daily').length, 6);
   const res = meta.addMatchResult(summary({ won: true, placement: 1, kills: 8, damage: 1500, aliveAtEnd: true }));
   assert.ok(res.xp > 0); assert.ok(res.credits > 0);
   assert.equal(meta.xp, res.xp);
@@ -224,8 +291,9 @@ test('Meta：任务进度累计、领奖成功且重复领奖被拒', () => {
   const res = meta.addMatchResult(summary({ kills: 3, damage: 400 }));
   assert.equal(res.missionsCompleted.length, 0);
   const daily = meta.missionList('daily');
-  assert.equal(daily.length, 3);
-  for (const m of daily) assert.ok(m.progress > 0 || m.metric === 'hordeWaves' || m.metric === 'wins');
+  assert.equal(daily.length, 6);
+  // 单局只推进与 summary 字段相关的任务；部分维度（如空投/翻滚）本局必然为 0
+  assert.ok(daily.some(m => m.metric === 'kills' && m.progress > 0 || m.progress > 0), '至少一条任务有进度');
   // 直接完成一条任务后领奖
   const target = meta.missionList('daily').find(m => !m.done);
   meta.data.missions.daily[target.id].progress = target.target;
@@ -305,7 +373,7 @@ test('Meta：损坏存档回退、import/export 往返一致、reset 复原', ()
   const broken = new MemoryStorage({ [SAVE_KEY]: '{not-json' });
   const meta = new Meta(broken);
   assert.equal(meta.level, 1); assert.equal(meta.xp, 0);
-  assert.equal(meta.missionList('daily').length, 3);
+  assert.equal(meta.missionList('daily').length, 6);
   const junk = new Meta(new MemoryStorage({ [SAVE_KEY]: JSON.stringify({ version: 1, xp: 'abc', stats: null }) }));
   assert.equal(junk.level, 1); assert.equal(typeof junk.stats.matches, 'number');
   meta.addMatchResult(summary({ won: true, placement: 1 }));
@@ -340,7 +408,7 @@ test('Meta：refreshMissions 跨天重置进度、同一天保持', () => {
     assert.equal(entry.progress, 0); assert.equal(entry.done, false); assert.equal(entry.claimed, false);
   }
   const weekly = Object.keys(meta.data.missions.weekly);
-  assert.equal(weekly.length, 3);
+  assert.equal(weekly.length, 4);
   meta.refreshMissions(new Date(2026, 9, 26, 10));
   assert.equal(meta.data.missions.week, '2026-W44');
 });
@@ -370,7 +438,8 @@ test('Meta：horde 模式结算计入波次、评级与 stats，不破坏普通�
   assert.ok(res.ratingDelta > 0, 'horde 模式应加段位分');
   assert.equal(meta.stats.matches, 1); assert.equal(meta.stats.wins, 1);
   assert.equal(meta.stats.hordeWaves, 7);
-  assert.ok(meta.missionList('daily').some(m => m.metric === 'hordeWaves'));
+  // 每日任务是轮换的：不保证当天一定抽到 hordeWaves，但整池必须存在该维度
+  assert.ok(DAILY_POOL.some(m => m.metric === 'hordeWaves'), '虫潮任务必须在每日池中');
   const hordeReward = computeRewards(summary({ mode: 'horde', won: true, placement: 1, totalTeams: 1, kills: 20, damage: 3000, hordeWaves: 10 }));
   const normal = computeRewards(summary({ won: true, placement: 1, totalTeams: 1, kills: 20, damage: 3000, hordeWaves: 0 }));
   assert.ok(hordeReward.xp > normal.xp, '波次应提供额外奖励');

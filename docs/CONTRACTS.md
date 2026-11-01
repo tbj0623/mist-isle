@@ -100,19 +100,31 @@ export const WEATHER = ['clear','rain','fog','sandstorm','snow'];
   },
   counts: { alive: 41, total: 64, teams: 16, aliveTeams: 9, humans: 4, bots: 37 },
   selfId: 'p_ab12' | null,
+  flight: null | {        // 1.3.0 · 空降航线（仅 deployStyle='skydive' 且 deploying 阶段存在；
+                          // 其余情况键完全缺失。二进制侧同样不设键）
+    x, z,                 // 运输机当前机位
+    fromX, fromZ, toX, toZ,  // 航线两端（在地图外，横穿整图）
+    ux, uz,               // 单位航向（客户端可用；二进制侧由两端点重算）
+    open: true,           // 舱门是否开启（可跳窗口）
+    closeIn: 7.26,        // 距离舱门关闭的秒数
+    jumped: 3, total: 64  // 已跳 / 总人数
+  },
   me: {                   // 本机玩家完整状态；无本机（观战/大厅）时为 null
     id, name, bot, team, teamName, hp, armor, armorTier, alive, downed, downedHp, bleedout,
     reviveProgress, reviveTarget, kills, damage, rank, assists, state: 'normal'|'crouch'|'sprint'|'dodge'|'downed'|'dead'|'vehicle',
     stamina, x, z, angle, weapon, ammo, reserve, ammoType, slot, loadout: [{ type, ammo, attachments:['red_dot'] }],
     mags: { light: 40 }, meds, bandages, energy, shields, grenades, smokes, flashes, molotovs,
     car, seat, interactLabel, pingCooldown, fireCooldown, reloadTime, healTime, healKind,
-    accuracy: 0.5, aliveAtEnd, spectating
+    accuracy: 0.5, aliveAtEnd, spectating,
+    deployStage: 'plane'|'freefall'|'chute'|'ground',  // 1.3.0 · 仅 skydive 模式存在
+    chute: 1, y: 150                                   // 伞降进度（1→0）与高度（米）
   },
   players: [ {            // 可见的其他玩家（服务端按距离过滤；队友永远可见）
     id, name, bot, team, teamName,
     x, z, angle, y,       // y = 空降高度/载具高度偏移（0 = 地面）
     hp, armor, armorTier, alive, downed, bleedout, reviveProgress, reviveTarget,
-    weapon, rank, kills, car, seat, connected, state, chute: 0..1, lastSeen, ping
+    weapon, rank, kills, car, seat, connected, state, chute: 0..1, lastSeen, ping,
+    deployStage: 'plane'|'freefall'|'chute'|'ground'  // 1.3.0 · 仅 skydive 存在
   } ],
   loot: [ { id, type:'weapon'|'ammo'|'consumable'|'armor'|'throwable'|'attachment'|'backpack',
             item: 'ar7', x, z, y, qty, ammo, rarity, attachments:['red_dot'] } ],
@@ -131,6 +143,10 @@ export const WEATHER = ['clear','rain','fog','sandstorm','snow'];
   teammates: [ { id, name, x, z, alive, downed, hp, bleedout, car } ]  // 小队面板专用（含自己）
 }
 ```
+
+> 二进制传输时同构输出的补充说明（§4.1）：`me.stats` 是权威累计对象；事件对象里实体 id 的键名是
+> `entityId`（`_emit` 把 `data.id` 映射过去），事件序号才是 `id`。二进制编码器按这两条实现，
+> 因此在实现新字段/新事件时**不要**假设「实体 id 也叫 id」。
 
 ### 3.1 事件类型（`events[]`）
 
@@ -161,29 +177,98 @@ export const WEATHER = ['clear','rain','fog','sandstorm','snow'];
 | `basehit` | `hp, maxHp` |
 | `end` | `winnerTeam, winnerName, reason` |
 | `levelup` | `level`（仅本地离线/客户端生成） |
+| `jump` | `player, x, z, x2, z2`（1.3.0 · 玩家跳伞离机；x2/z2 = 目标落点） |
+| `chute` | `player, x, z`（1.3.0 · 自动开伞） |
+| `doorOpen` / `doorClose` | `x, z`（1.3.0 · 舱门开/关） |
+| `land` | `player, x, z`（1.3.0 · 单个玩家落地） |
+| `landAll` | `-`（1.3.0 · 全员落地，deploying → live） |
 
 客户端必须忽略未知事件类型。
 
-## 4. 网络协议（WebSocket `/ws`，JSON 文本）
+## 4. 网络协议（WebSocket `/ws`，JSON 文本 + 二进制快照 v1）
+
+### 4.0 传输层：JSON 控制面 + 二进制状态面
+
+控制消息（join/lobby/chat/input/joined/hello…）仍是 **JSON 文本**；`state` 帧在能力协商成功后改为
+**二进制**（`ArrayBuffer`）。两者共用同一条 WebSocket 连接，按 WS 帧类型自动区分（文本 = JSON，二进制 = state）。
+
+**能力协商（向后兼容，可灰度、可回退）**
+
+1. 服务端 `hello` 带 `wire: 1`（0 或缺省 = 只支持 JSON）。
+2. 客户端 `join` / `spectate` 带 `binary: true` 表示愿意收二进制。
+3. 服务端在 `joined` / `spectating` / `resumed` 回执里带 `binary: true|false` 与 `wire: 1|0`；
+   只有回执为 true 时后续 state 才是二进制，否则继续 JSON。
+4. 二进制客户端在**任何 state 帧之前**会先收到一条 JSON `roster` 消息（见 4.1）；roster 变化
+   （有人加入/离开/换队）时会在下一帧前重新下发。
+5. 回退：服务端 `WIRE_BINARY=0` 或 `createGameServer({ binary:false })` 全局强制 JSON；
+   客户端 `new NetClient({ wantBinary:false })` 只发 JSON。旧客户端不带 `binary` 时服务端行为与 v3 完全一致。
+
+**协议版本仍是 `PROTOCOL_VERSION = 3`**：二进制是能力协商，不引入新的握手版本号，
+因此老客户端不会被拒绝，也不需要与 `wire` 版本同步升级。`wire` 自身带版本字节（当前 `1`）。
 
 - 客户端 → 服务端：
-  - `{type:'join', protocol, mode:'create'|'join'|'quick'|'resume', code, token, name, team, gameMode:'squad'|'solo'|'horde', mapId, loadout:{primary,secondary,attachments}, clientVersion, difficulty}`
+  - `{type:'join', protocol, mode:'create'|'join'|'quick'|'resume', code, token, name, team, gameMode:'squad'|'solo'|'horde', mapId, loadout:{primary,secondary,attachments}, clientVersion, difficulty, binary?:true}`
   - `{type:'ready'}`：渲染就绪
   - `{type:'start'}`：房主开始
   - `{type:'input', input:{seq,mx,mz,aim,fire,reload,heal,interact,swap,throwable:'frag'|'smoke'|'flash'|'molotov'|null, sprint, crouch, dodge, useItem:'bandage'|'med'|'energy'|'shield'|null, ping, pingKind, revive, slot:0|1, buy, upgrade, ready}}`
   - `{type:'chat', text, channel:'team'|'all'}`（服务端限制 80 字、2 条/秒）
   - `{type:'rematch'}`、`{type:'leave'}`、`{type:'ping', sent}`
+  - `{type:'dropvote', x, z}`（1.1.0 增量）：房间等待阶段投票降落区，归一化 0–1 坐标，服务端 clamp；非等待阶段静默忽略
+  - `{type:'config', mode?, mapId?, difficulty?, deployStyle?}`（`deployStyle` 为 1.3.0 增量）：房主在等待室切换房间设置。
+    `deployStyle` 取 `'skydive'`（完整航线 + 跳伞）或 `'instant'`（直接落地，1.x 行为）。训练场与 horde 强制 `instant`。
 - 服务端 → 客户端：
-  - `{type:'hello', protocol, version, motd}`
-  - `{type:'joined', id, token, code, host:bool, team, teamName, mapId, mode}`
-  - `{type:'lobby', code, public, host, mode, gameMode, mapId, mapName, startsIn, players:[{id,name,team,host,ready,connected,level}], max, teamSize, difficulty}`
-  - `{type:'state', state:snapshot}`
+  - `{type:'hello', protocol, version, motd, wire:0|1}`
+  - `{type:'joined', id, token, code, host:bool, team, teamName, mapId, mode, binary:bool, wire:0|1}`（`resumed:true` 的重连回执同样带 `binary`）
+  - `{type:'lobby', code, public, host, mode, gameMode, mapId, mapName, startsIn, players:[{id,name,team,host,ready,connected,level}], max, teamSize, difficulty, dropVotes:[{x,z,by,name,team}]?}`（`dropVotes` 为 1.1.0 增量：在房成员的最新票，按投票时间升序；开局时按队取质心作为出生锚点 hint）
+  - `{type:'roster', wire:1, tick, players:[{id,name,bot,team,teamName}]}`（**仅二进制客户端**；每次 roster 变化后重发）
+  - `{type:'state', state:snapshot}`（JSON 客户端）
+  - **二进制 state 帧**（二进制客户端；结构见 §4.1）
   - `{type:'error', message, code?}`
   - `{type:'chat', from, name, team, text, channel}`
   - `{type:'pong', sent, time}`
   - `{type:'expired'}` / `{type:'left'}` / `{type:'kicked', reason}`
 - 频率：input 25Hz（40ms），state 10Hz，ping 每 2s。单帧 JSON < 32KB（服务端必须做 loot/事件增量 + 距离过滤）。
 - 校验：服务端 `sanitizeInput` 白名单 + 限速（90 msg/s）+ 速率桶 + 载荷上限 4KB；位置/伤害/血量只信服务端。
+
+### 4.1 二进制 state 帧（`shared/wire.mjs`，wire v1）
+
+**唯一要求：解码结果与 `snapshot()` 的 JSON 结构同构**（字段名、类型、数组顺序一致；数值有量化误差）。
+因此 `client/main.js` / `scene.js` / `ui-hud.js` 消费二进制帧与 JSON 帧的代码完全相同。
+
+帧布局（全部小端）：
+
+| 字节 | 内容 |
+| --- | --- |
+| `u8` | 帧类型，`1` = state |
+| `u8` | wire 版本，当前 `1`（不一致直接抛 `WireError`） |
+| `u8` | flags，bit0 = spectator |
+| `u8` | 保留（必须为 0） |
+| … | **共享区块**：cars / grenades / smokes / fires / drops / markers / horde / events / loading / result |
+| … | **观察者区块**：v / mode / mapId / mapName / weather / timeOfDay / phase / time / matchTime / duration / zone / counts / selfId / me / players / loot / lootPatch / pings / teammates / 扩展字段 |
+
+- **共享区块**与观察者无关（同一 tick 同事件窗口时全房相同）。服务端 `encodeSharedBlockFrame()`
+  编一次、`encodeStateFrame(..., { shared })` 复用 64 次；`makeSharedCache` 按 `(tick, eventId, sinceEventId)` 分桶。
+- **字符串表**：武器/道具/事件类型/字段名/队名/地图名等常量写死在两端同样顺序的表里；命中只发索引。
+  未知字符串（玩家昵称例外见 roster）走「长度 + UTF-8 内联」，**不写入表**，因此丢帧/重连不会造成表错位。
+- **roster**：`id/name/bot/team/teamName` 不在 state 帧里重复。玩家引用是 1 字节槽位（0=null，255=内联整条）；
+  静态字段与 roster 不一致（改名/换队而 roster 尚未刷新）时自动内联，解码端无需额外同步。
+- **字段 schema + 位掩码**：players / me / teammates / cars / loot / 事件都按 schema 只发「与默认值不同」的字段。
+  默认值示例：`hp=100`、`alive=true`、`connected=true`、`state='normal'`、`seat=-1`、载具 hp/maxHp/color/seats 按车型。
+- **量化**（`QUANT`）：位置 0.05 m（int16，±1638.35 m 安全区间，越界截断）、角度 1/65536 圈（≈0.0055°，
+  保留原符号，±π 不反向绕圈）、生命/护甲/时间/速度等 0.01（zigzag varint）、`spread` 0.0001、`accuracy` 0.001。
+- **事件**：按 `type` 走专用 schema（`shared/simulation.mjs` 的 `_emit` 里 `id` 字段实际写入 `entityId`，
+  避免与事件序号 `id` 冲突）；未知类型/未知字段走通用值编码器（null/bool/int/float/str/array/object + 位置/量化值），
+  因此新增事件类型不需要同步升级 wire 版本。
+- **loot 差量**：与 JSON 路径完全相同 —— 服务端把 `loot` 换成 `lootPatch { upsert, remove }`，
+  二进制帧里 `u8` 形态标记区分「整表 / 差量 / 无」。
+- **异常值**：`NaN` / `Infinity` 一律落到 0（不抛异常、不污染后续字节）；截断帧抛 `WireError`，
+  客户端 `NetClient._onBinary` 只丢弃该帧并 `console.warn`，不影响主循环。
+- **体积**（`artifacts/wire-benchmark.json`，64 人 × 600 tick）：JSON 平均 **6.76 KB/帧** →
+  二进制平均 **418 B/帧**，**-93.8%**；单房间下行 34.6 Mbps → 2.14 Mbps；首帧 21.0 KB → 1.93 KB
+  （roster 一次性 5.15 KB）。编码耗时 55.4 μs → 26.1 μs/帧（含共享区块复用），解码 ≈ 65–75 μs/帧。
+  同一脚本还用真实 WebSocket 同时挂二进制/JSON 客户端做 A/B（8 秒稳态窗口）：**785.9 KB → 49.2 KB/人
+  （-93.7%）**，与内存内测量互相印证。
+- **测试**：`tests/wire.test.mjs`（编解码 43 项）与 `tests/wire-integration.test.mjs`（服务端协商 6 项）。
 
 ## 5. 数据文件契约
 

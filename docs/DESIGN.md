@@ -103,7 +103,8 @@
 | `≤900px` | 顶栏 62px，隐藏品牌副标，弹窗收窄 |
 | `≤760px` / `height≤460px` | 手机横屏：导航缩为纯中文，地图卡 3 列，隐藏描述文本，按钮 46px |
 | `height≤400px` | 进一步压缩标题与卡片（640×360 验收） |
-| `max-height:500px + landscape` | HUD 小屏布局：`--hud-u ≈ 0.9–1.1px`，面板重排，文字标签隐藏，按钮 ≥38px |
+| `max-height:500px + max-width:1000px` | HUD 小屏分区布局（见 §7.1）：`--hud-u ≈ 0.9–1.1px`，面板重排，文字标签隐藏，按钮视觉 44px |
+| `max-height:500px + landscape` | 兼容旧规则：`--hud-u` 收紧，面板缩小 |
 | `761–1180 + landscape` | 平板 HUD 中间档缩放 |
 | `orientation:portrait` | 显示 `#rotate-hint` 遮罩，隐藏屏幕内容 |
 | `pointer:coarse` | 隐藏桌面键位提示，显示触屏控件，取消 hover 位移 |
@@ -111,6 +112,26 @@
 | `prefers-reduced-motion` | 全部动画/过渡压缩到 0.001ms，流光关闭 |
 | `prefers-contrast:more` | 描边加粗、文本提亮 |
 
+### 7.1 小屏 HUD 分区（844×390 / 640×360 实测）
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ [存活|淘汰]   [安全区]   [阶段]                          ☰        │
+│ ┌小队┐                                                 ┌小地图┐   │
+│ │ 4  │                                                 └──────┘   │
+│ └────┘                                        ┌击杀播报───────┐   │
+│                                               └───────────────┘   │
+│ ┌生命──────┐                              ┌武器板┐               │
+│ │ 血/甲/盾 │                              │24/120│   ┌─┬─┬─┐     │
+│ └──────────┘                              └──────┘   │⇄│+│↻│     │
+│ [战术][战术][战术]                        ◎瞄准     ├─┼─┼─┤     │
+│  ◎移动摇杆                                          │🜂│🜃│⌖│     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+约束：`#action-buttons` 含 10 个按钮（换弹/治疗/交互/投掷/切枪/冲刺/蹲伏/翻滚/背包/标记），
+小屏固定为 3 列 × 4 行 44px 网格贴右下角；武器板在其上方，击杀播报再上；
+摇杆 84px、生命板 152px 宽、小队板 112px 宽，全部不与动作簇重叠（`scripts/css-check.mjs` 断言 0 overlap）。
 安全区：`--safe-t/r/b/l = env(safe-area-inset-*, 0px)`，所有 HUD 与屏幕边距都用 `max(基准, safe + 基准)`；横屏左右额外留白。
 
 ## 8. 动效规范
@@ -151,3 +172,53 @@
 - 状态优先级：`.btn-primary > .btn > .btn-ghost > .btn-danger`（危险操作仅用于不可逆行为，且需二次确认）。
 - 文案长度：按钮 ≤ 6 个汉字；卡片标题 ≤ 12 字；超长用 `.ellipsis`。
 - 稀有度类只加在卡片容器上，不要加在文字标签上（避免描边套到文字）。
+
+## 11. 布局契约（与 uiux DOM 对齐，2026-10-18 修订）
+
+| 元素 | 规则 |
+| --- | --- |
+| `.screen-body` | `display:flex; flex-direction:column; width:100%; max-width:min(1560px,100%); margin-inline:auto; padding: clamp(14px,2.2vw,30px) clamp(20px,3vw,56px); overflow-y:auto; overflow-x:hidden` |
+| `.screen-main` | `display:grid; grid-template-columns:minmax(0,1fr); flex:0 0 auto;`（关键：`flex:0 0 auto` 防 flex 列内高度塌陷） |
+| `.screen-main`（两栏） | `.two-col` / `:has(> .screen-side)` → `minmax(0,1fr) minmax(240px,320px)`；`.single` 强制单列 |
+| `.screen-main-content` | `display:flex; flex-direction:column; gap:var(--sp-5); min-width:0` |
+| `.screen-head` | 允许 `eyebrow / h1 / h2 / p` 平铺为兄弟节点：eyebrow 独占一行，说明文字右对齐 |
+| `[data-screen="home"] .home-body` | `display:grid; grid-template-rows:auto auto 1fr;`；`.home-bottom{margin-top:auto}`；`.home-hero max-width:min(760px,64%)` |
+| `.home-nav` | 4 列 × 2 行（7 项），`grid-auto-rows:minmax(56px,auto)` |
+| `.player-card` | 固定宽 `clamp(272px,26vw,336px)`，禁止通栏 |
+| `.home-foot` | 纵向右对齐、`color:var(--text-lo)` + 文本阴影，保证叠在 3D 场景上可读 |
+| `.play-main` / `.loadout-main` | 两栏 grid（`minmax(0,1fr) + minmax(248px,320px)`），≤980px 降单列 |
+| `.map-info` | `display:flex; flex-direction:column; gap:6px; padding:var(--sp-3) var(--sp-4) var(--sp-4)` |
+| `.map-tags` | `display:flex; flex-wrap:wrap; gap:6px` |
+| `.tip-row` / `.tip-dot` | 提示行 + 5px 青绿圆点（`margin-top:6px` 对齐首行） |
+| `.countdown` | 胶囊：`inline-flex; gap:8px; padding:6px 12px; bg:var(--bg-inset)` |
+| HUD 小屏 | `#action-buttons` 3×4 网格 44px；武器板在动作簇上方；播报夹在面板之间 |
+
+**回归工具**：`node scripts/css-check.mjs <url>` 输出各屏幕元素 boundingBox、横向溢出与 HUD 重叠断言；
+`node scripts/css-shots.mjs <url> artifacts/css-final` 输出 1280×720 / 844×390 / 640×360 三档截图。
+
+## 12. 已知约束
+
+- `:has()` 在旧 Android WebView（Chrome < 105）不支持：两栏屏会自动退化为单列堆叠，功能不丢失。
+- `backdrop-filter` 不可用时面板仍有 rgba 底色，可读性不受影响。
+- HUD 的 `--hud-u` 是**长度**值（如 `0.95px`），写法必须是 `calc(12 * var(--hud-u))`；`calc(12px * var(--hud-u))` 为无效 calc，会静默失效。
+
+## 13. 首屏 CTA 与滚动预算（2026-10-18 追加）
+
+**验收指标**（`node scripts/cta-audit.mjs`）：
+- `[data-screen="play"]` 在 1280×720 下 `#btn-offline` / `#btn-online` 首屏可见（`bottom ≤ 内高`，不滚动即可点击）。
+- 844×390 下 play 屏 `scrollHeight ≤ 600`（≤1.7 屏）。
+- 其它屏 `scrollHeight / clientHeight ≤ 4`。
+- 全分辨率 `documentElement.scrollWidth ≤ innerWidth`（无横向溢出）。
+
+**压缩策略**（只调密度，不删功能）：
+| 区域 | 手段 |
+| --- | --- |
+| play 标题区 | 720p：eyebrow 9px、标题 `clamp(22,2.4vw,32)`、说明 11px；390p：隐藏 eyebrow、说明改右对齐一行 |
+| 模式卡 | 720p：padding 10/12、图标 28、描述 2 行；390p：横排一行式（图标+名称），隐藏描述与 meta |
+| 地图卡 | 720p：缩略图 `clamp(44px,7vh,70px)`、描述 2 行、chip 18px；390p：仅名称+难度点，隐藏描述/标签 |
+| 侧栏 | 720p：panel-head 36px、stat 6/10、行动要点仅留 2 条；390p：只保留小队面板（单行 4 格），隐藏情报与要点 |
+| career | 720p：概览 12/16、统计 `minmax(104px,1fr)`、成就 `minmax(178px,1fr)`；390p：统计 5 列、成就 3 列、隐藏成就副标题 |
+| loadout | 720p：武器槽 56px、配件 `minmax(84px)`；390p：武器槽并排 2 列、配件 4 列、隐藏 field-help |
+| store/codex/missions/settings | 栅格 `minmax(148–168px)`、卡片 padding 8–10、面板 head 38px |
+
+**注意**：`#hud` 相关尺寸不受本节影响；HUD 仍由 §19/§41 的小屏分区控制。

@@ -5,8 +5,14 @@
 
 export const ARMORS = {
   armor1: {
+    // 平衡：护盾电池（60 点、无耐久、先于护甲结算、每局产出约 58 个）此前严格优于轻甲。
+    // 护甲的实际收益 = durability / armorDurabilityLoss(0.8) × absorb(0.35)：
+    //   60 耐久 → 26.3 等效血量（全游戏最弱的一件装备，连一件消耗品都不如）
+    //   90 耐久 → 39.4 等效血量（仍然低于满盾 60，但不再被一件消耗品碾压）
+    // 选择「加强轻甲」而不是「削弱电池」：电池 3 秒站定、有堆叠上限、用完即弃，
+    // 它的数值本身没有越界，问题在于轻甲作为一件装备严重欠调。
     id: 'armor1', name: '轻型护甲', short: '轻甲', kind: 'armor', tier: 1,
-    absorb: 0.35, durability: 60, rarity: 'common', unlock: 1, price: 0,
+    absorb: 0.35, durability: 90, rarity: 'common', unlock: 1, price: 0,
     color: 0x88bfe2, icon: '▤', desc: '帆布夹层里塞了几块插板，聊胜于无，但比裸奔强。',
   },
   armor2: {

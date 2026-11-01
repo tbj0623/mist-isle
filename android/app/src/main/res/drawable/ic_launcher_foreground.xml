@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标 foreground：由 client/icon.svg 手工化简而来。
+  保留三个核心意象：岛屿（品牌青绿）、琥珀瞄准准星（对局核心交互）、右上信号弧（信号风暴）。
+  渐变/模糊/网格在启动器尺寸下不可读，全部舍弃，只用品牌主色实色。
+
+  画布 108dp；自适应图标外圈约 18dp 会被启动器蒙版裁掉，因此所有笔画都收在
+  中心 66dp 安全区圆（半径 33dp）内：准星刻线最远 23.5dp、岛屿底角 29.4dp、
+  外弧最远 26.5dp，均留有余量。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 岛屿本体：平底圆丘，中心略偏下 -->
+    <path
+        android:fillColor="#1B5F57"
+        android:pathData="M30,71 C33,62 42,58 50,57 C58,56 68,58 74,62 C77,64 78,67 78,71 Z" />
+    <!-- 岛内等高线（低透明度薄荷色） -->
+    <path
+        android:strokeColor="#7397ECD9"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M40,66 C44,61 52,59 60,60 C64,60.7 67,62 69,64" />
+    <!-- 信号风暴：右上两道同心弧（外弧更淡） -->
+    <path
+        android:strokeColor="#B36FE0C8"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M64,38 a10,10 0 0 1 10,10" />
+    <path
+        android:strokeColor="#596FE0C8"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M64,33 a15,15 0 0 1 15,15" />
+    <!-- 准星外环 -->
+    <path
+        android:strokeColor="#F5B445"
+        android:strokeWidth="2.6"
+        android:fillColor="#00000000"
+        android:pathData="M40.5,54 a13.5,13.5 0 1 0 27,0 a13.5,13.5 0 1 0 -27,0 Z" />
+    <!-- 四向刻线：上下左右 -->
+    <path
+        android:strokeColor="#F5B445"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M54,31 v7.5 M54,69.5 v7.5 M30.5,54 h7.5 M69.5,54 h7.5" />
+    <!-- 中心点（薄荷色，呼应海岸微光） -->
+    <path
+        android:fillColor="#97ECD9"
+        android:pathData="M51.6,54 a2.4,2.4 0 1 0 4.8,0 a2.4,2.4 0 1 0 -4.8,0 Z" />
+</vector>

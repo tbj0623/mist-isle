@@ -1,16 +1,19 @@
 // 雾岛突围 / MIST ISLE — 本地存档层（客户端 localStorage；Node 测试可注入内存 storage）
 // 只依赖 shared/ 纯函数，不触碰 DOM 渲染。存档 key: mist-isle-save-v1
+// 存档版本 v2：新增 streak（七日任务链）/ 更多统计字段 / 成就解锁外观。
+// 迁移策略：repair() 对任何版本（含 0.2.0 时代无 version 字段的存档）都能补齐默认值，
+// 未知的 mission/achievement id 会被忽略（渲染与结算都按 ALL_MISSIONS / ACHIEVEMENT_BY_ID 过滤）。
 import {
   SAVE_KEY, SAVE_VERSION, MAX_LEVEL, DEFAULT_LOADOUT, DEFAULT_SETTINGS, emptyMeta,
   levelFromXp, xpForLevel, totalXpForLevel, computeRewards, ratingDelta, rankFor,
   protectRating, achievementValue, dayKey, weekKey, pickDaily, pickWeekly,
-  missionContribution, matchSummaryFromState,
+  missionContribution, matchSummaryFromState, advanceStreak, previousDayKey,
 } from '../shared/progression.mjs';
 import { ALL_MISSIONS } from '../shared/data/missions.mjs';
 import { ACHIEVEMENTS, ACHIEVEMENT_BY_ID } from '../shared/data/achievements.mjs';
-import { getStoreItem, defaultSkinIds, STORE_ALL } from '../shared/data/store.mjs';
-import { RANK_TIERS } from '../shared/data/ranks.mjs';
-export { RANK_TIERS };
+import { getStoreItem, defaultSkinIds, STORE_ALL, achievementUnlocks } from '../shared/data/store.mjs';
+import { RANK_TIERS, seasonRewards } from '../shared/data/ranks.mjs';
+export { RANK_TIERS, seasonRewards };
 
 export class MemoryStorage {
   constructor(seed = {}) { this.map = new Map(Object.entries(seed)); }
@@ -32,6 +35,64 @@ function defaultStorage() {
 const num = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 const clone = value => JSON.parse(JSON.stringify(value));
+
+// ---------- 存档迁移（v1 → v2，含 0.2.0 时代无 version 的存档） ----------
+// 任务桶：丢掉未知 id、补齐字段；不做「进度补齐」以免旧档瞬间完成新任务。
+function repairMissions(raw = {}, base = {}) {
+  const day = typeof raw?.day === 'string' ? raw.day : '';
+  const week = typeof raw?.week === 'string' ? raw.week : '';
+  const pick = (group, ids) => {
+    const source = group && typeof group === 'object' && !Array.isArray(group) ? group : {};
+    const out = {};
+    for (const id of ids) {
+      const entry = source[id];
+      if (!entry || typeof entry !== 'object') continue; // 未知/缺失 → 由 refreshMissions 重建
+      out[id] = {
+        progress: Math.max(0, num(entry.progress)),
+        done: !!entry.done,
+        claimed: !!entry.claimed,
+      };
+    }
+    return out;
+  };
+  const daily = day ? pick(raw.daily, pickDaily(day)) : {};
+  const weekly = week ? pick(raw.weekly, pickWeekly(week)) : {};
+  return {
+    day, week, daily, weekly,
+    // v1 没有的镜像字段：保留一个副本，便于旧 UI 读取
+    ...(base?.missions?.legacy ? base.missions.legacy : {}),
+  };
+}
+
+// 成就桶：未知成就 id 直接丢弃；gold 成就的 rewardSkin 由 unlockAchievement 发放。
+function repairAchievements(raw = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [id, entry] of Object.entries(raw)) {
+    const def = ACHIEVEMENT_BY_ID[id];
+    if (!def || !entry || typeof entry !== 'object') continue;
+    out[id] = {
+      progress: Math.min(num(def.target, 1), Math.max(0, num(entry.progress))),
+      done: !!entry.done,
+      claimed: !!entry.claimed,
+    };
+  }
+  return out;
+}
+
+// 任务链：v1 没有 streak → 从 0 开始（不追溯历史，避免老玩家被「凭空奖励」或「凭空断链」）。
+function repairStreak(raw = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { count: 0, best: 0, day: '', claimed: [], lastRewardDay: '' };
+  }
+  return {
+    count: Math.max(0, num(raw.count)),
+    best: Math.max(0, num(raw.best, num(raw.count))),
+    day: typeof raw.day === 'string' ? raw.day : '',
+    claimed: Array.isArray(raw.claimed) ? raw.claimed.filter(d => typeof d === 'string').slice(-30) : [],
+    lastRewardDay: typeof raw.lastRewardDay === 'string' ? raw.lastRewardDay : '',
+  };
+}
 
 export class Meta {
   constructor(storage = null) {
@@ -58,6 +119,19 @@ export class Meta {
   repair(raw = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return emptyMeta();
     const base = emptyMeta();
+    const rawStats = raw.stats && typeof raw.stats === 'object' ? raw.stats : {};
+    const stats = { ...base.stats, ...rawStats };
+    // 老存档没有的计数字段补 0；对象型字段补 {}。
+    for (const [key, value] of Object.entries(base.stats)) {
+      if (value && typeof value === 'object') {
+        stats[key] = rawStats[key] && typeof rawStats[key] === 'object' ? { ...rawStats[key] } : { ...value };
+      } else if (!Number.isFinite(Number(rawStats[key]))) {
+        stats[key] = Number(value) || 0;
+      } else {
+        stats[key] = Number(rawStats[key]);
+      }
+    }
+    if (typeof stats.weaponsUsed !== 'object' || Array.isArray(stats.weaponsUsed)) stats.weaponsUsed = {};
     const data = {
       ...base,
       ...raw,
@@ -66,7 +140,7 @@ export class Meta {
       credits: Math.max(0, num(raw.credits, base.credits)),
       rating: Math.max(0, num(raw.rating)),
       peakRating: Math.max(0, num(raw.peakRating, num(raw.rating))),
-      stats: { ...base.stats, ...(raw.stats && typeof raw.stats === 'object' ? raw.stats : {}) },
+      stats,
       unlocked: {
         weapons: Array.isArray(raw.unlocked?.weapons) ? [...raw.unlocked.weapons] : [],
         skins: Array.isArray(raw.unlocked?.skins) ? [...raw.unlocked.skins] : [],
@@ -74,20 +148,16 @@ export class Meta {
         items: Array.isArray(raw.unlocked?.items) ? [...raw.unlocked.items] : [],
       },
       loadout: { ...base.loadout, ...(raw.loadout && typeof raw.loadout === 'object' ? raw.loadout : {}) },
-      missions: {
-        day: typeof raw.missions?.day === 'string' ? raw.missions.day : '',
-        week: typeof raw.missions?.week === 'string' ? raw.missions.week : '',
-        daily: raw.missions?.daily && typeof raw.missions.daily === 'object' ? raw.missions.daily : {},
-        weekly: raw.missions?.weekly && typeof raw.missions.weekly === 'object' ? raw.missions.weekly : {},
-      },
-      achievements: raw.achievements && typeof raw.achievements === 'object' ? { ...raw.achievements } : {},
+      missions: repairMissions(raw.missions, base),
+      achievements: repairAchievements(raw.achievements),
+      streak: repairStreak(raw.streak),
       settings: { ...base.settings, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
       lastResult: raw.lastResult ?? null,
     };
     for (const id of defaultSkinIds()) if (!data.unlocked.skins.includes(id)) data.unlocked.skins.push(id);
     const levelInfo = levelFromXp(data.xp);
     data.level = levelInfo.level;
-    if (!data.missions.day || !data.missions.week) this.refreshMissions(data, new Date());
+    if (!data.missions.day || !data.missions.week) this.refreshMissions(new Date(), data);
     return data;
   }
 
@@ -138,6 +208,13 @@ export class Meta {
     const ensure = (ids, group) => { for (const id of ids) if (!group[id]) group[id] = { progress: 0, done: false, claimed: false }; };
     ensure(pickDaily(missions.day), missions.daily);
     ensure(pickWeekly(missions.week), missions.weekly);
+    // 清掉已下线（不在 ALL_MISSIONS 里）的历史条目；当前池内的 id 一律保留，
+    // 以兼容「同一天内手工注入 / 热更任务池」的场景。
+    const keep = group => {
+      for (const id of Object.keys(group)) if (!ALL_MISSIONS[id]) delete group[id];
+    };
+    keep(missions.daily);
+    keep(missions.weekly);
     if (target === this.data) this.save();
     return missions;
   }
@@ -157,6 +234,12 @@ export class Meta {
     }).filter(Boolean);
   }
 
+  // 当日每日任务是否全部领取（任务链判定条件）
+  dailyCleared() {
+    const list = this.missionList('daily');
+    return list.length > 0 && list.every(m => m.done && m.claimed);
+  }
+
   claimMission(id) {
     this.refreshMissions(new Date());
     const groups = [this.data.missions.daily, this.data.missions.weekly];
@@ -170,10 +253,30 @@ export class Meta {
       entry.claimed = true;
       this.addXp(def.xp);
       this.data.credits += num(def.credits);
+      this.data.stats.creditsEarned = num(this.data.stats.creditsEarned) + num(def.credits);
+      const streakResult = this.settleStreak();
       this.save();
-      return { ok: true, id, xp: num(def.xp), credits: num(def.credits), level: this.data.level };
+      return {
+        ok: true, id, xp: num(def.xp), credits: num(def.credits), level: this.data.level,
+        streak: this.data.streak, streakReward: streakResult,
+      };
     }
     return { ok: false, error: 'unknown-mission' };
+  }
+
+  // 七日任务链：当天所有每日任务都领取后推进一天（同一天只算一次）
+  settleStreak(now = new Date()) {
+    const day = dayKey(now);
+    const cleared = this.dailyCleared();
+    const result = advanceStreak(this.data.streak, day, cleared, previousDayKey(day));
+    this.data.streak = result.streak;
+    if (!result.rewarded) return null;
+    const reward = result.rewarded;
+    this.addXp(num(reward.xp));
+    this.data.credits += num(reward.credits);
+    this.data.stats.creditsEarned = num(this.data.stats.creditsEarned) + num(reward.credits);
+    this.data.lastStreakReward = { day: reward.day, xp: num(reward.xp), credits: num(reward.credits) };
+    return { xp: num(reward.xp), credits: num(reward.credits), days: reward.days, day: reward.day };
   }
 
   // ---------- 成就 ----------
@@ -182,6 +285,21 @@ export class Meta {
       const entry = this.data.achievements[def.id] || { progress: 0, done: false, claimed: false };
       return { ...def, progress: entry.progress, done: entry.done, claimed: entry.claimed, pct: clamp(entry.progress / def.target, 0, 1) };
     });
+  }
+
+  // 隐藏成就：未达成前只暴露 ??? 与所属分类（UI 层据此渲染）
+  achievementView(def, entry) {
+    const state = entry || { progress: 0, done: false, claimed: false };
+    const masked = !!def.hidden && !state.done;
+    return {
+      ...def,
+      title: masked ? '???' : def.title,
+      name: masked ? '???' : (def.name || def.title),
+      desc: masked ? '达成后揭晓。' : def.desc,
+      masked,
+      progress: state.progress, done: state.done, claimed: state.claimed,
+      pct: clamp(state.progress / Math.max(1, def.target), 0, 1),
+    };
   }
 
   claimAchievement(id) {
@@ -195,8 +313,35 @@ export class Meta {
     this.addXp(def.xp);
     this.data.credits += num(def.credits);
     this.data.stats.creditsEarned = num(this.data.stats.creditsEarned) + num(def.credits);
+    const granted = this.grantAchievementUnlocks(id);
     this.save();
-    return { ok: true, id, xp: num(def.xp), credits: num(def.credits), level: this.data.level };
+    return {
+      ok: true, id, xp: num(def.xp), credits: num(def.credits), level: this.data.level,
+      tier: def.tier || 'bronze', rewardSkin: def.rewardSkin || null, granted,
+    };
+  }
+
+  // 成就解锁的外观（unlock.achievement）+ 金成就专属皮肤，一次性发放且不重复
+  grantAchievementUnlocks(achievementId) {
+    const granted = [];
+    const add = itemId => {
+      const item = getStoreItem(itemId);
+      if (!item) return;
+      if (this.ownsAny(item)) return;
+      if (item.kind === 'character') this.data.unlocked.skins.push(itemId);
+      else this.data.unlocked.items.push(itemId);
+      granted.push(itemId);
+    };
+    for (const link of achievementUnlocks()) if (link.achievement === achievementId) add(link.id);
+    const def = ACHIEVEMENT_BY_ID[achievementId];
+    if (def?.rewardSkin) add(def.rewardSkin);
+    if (granted.length) this.data.stats.skinsOwned = this.cosmeticsOwned();
+    return granted;
+  }
+
+  cosmeticsOwned() {
+    const set = new Set([...(this.data.unlocked.skins || []), ...(this.data.unlocked.items || [])]);
+    return set.size;
   }
 
   // ---------- 升级 ----------
@@ -240,7 +385,7 @@ export class Meta {
       const value = achievementValue(def.metric, safe, this.data.stats);
       if (!entry) entry = this.data.achievements[def.id] = { progress: 0, done: false, claimed: false };
       entry.progress = Math.min(def.target, Math.max(num(entry.progress), value));
-      if (entry.progress >= def.target) { entry.done = true; entry.claimed = false; achievementsCompleted.push({ id: def.id, title: def.title, xp: def.xp, credits: def.credits }); }
+      if (entry.progress >= def.target) { entry.done = true; entry.claimed = false; achievementsCompleted.push({ id: def.id, title: def.title, xp: def.xp, credits: def.credits, tier: def.tier || 'bronze' }); }
     }
     // 评级（连败保护）
     if (summary.mode !== 'training') {
@@ -253,11 +398,15 @@ export class Meta {
     const levelUpInfo = this.addXp(xpGain);
     this.data.credits = Math.max(0, num(this.data.credits) + creditGain);
     this.data.stats.creditsEarned = num(this.data.stats.creditsEarned) + creditGain;
+    this.data.stats.skinsOwned = this.cosmeticsOwned();
+    const seasonal = seasonRewards(this.data.peakRating);
     const payload = {
       summary: safe, xp: xpGain, credits: creditGain,
       levelUp: levelUpInfo.levelUp, oldLevel: levelUpInfo.before ?? levelUpInfo.level, newLevel: this.data.level,
       missionsCompleted, achievementsCompleted, ratingDelta: summary.mode === 'training' ? 0 : num(this.ratingChange?.delta, delta),
       rating: this.data.rating, rank: rankFor(this.data.rating), totalXp: this.data.xp,
+      peakRating: this.data.peakRating, season: seasonal,
+      streak: { ...this.data.streak },
     };
     this.data.lastResult = { mode: safe.mode, won: !!safe.won, placement: num(safe.placement), kills: num(safe.kills), xp: xpGain, credits: creditGain, level: this.data.level, at: Date.now() };
     this.save();
@@ -278,14 +427,33 @@ export class Meta {
     s.pickups = num(s.pickups) + num(summary.pickups);
     s.vehicles = num(s.vehicles) + num(summary.vehiclesUsed);
     s.vehicleRams = num(s.vehicleRams) + num(summary.vehicleRams);
+    s.vehicleMeters = num(s.vehicleMeters) + num(summary.vehicleMeters);
+    s.airdrops = num(s.airdrops) + num(summary.airdrops);
+    s.dodges = num(s.dodges) + num(summary.dodges);
+    s.throwHits = num(s.throwHits) + num(summary.throwHits);
+    s.attachments = num(s.attachments) + num(summary.attachments);
+    s.dismantles = num(s.dismantles) + num(summary.dismantles);
+    s.crouchKills = num(s.crouchKills) + num(summary.crouchKills);
     s.bossKills = num(s.bossKills) + num(summary.bossKills);
     if (summary.won) {
       s.wins = num(s.wins) + 1;
       s.streak = num(s.streak) + 1;
       s.bestStreak = Math.max(num(s.bestStreak), num(s.streak));
       if (num(summary.damageTaken) === 0) s.unscathedWins = num(s.unscathedWins) + 1;
+      if (summary.mapId) {
+        s.wonMaps = { ...(s.wonMaps && typeof s.wonMaps === 'object' ? s.wonMaps : {}) };
+        s.wonMaps[summary.mapId] = num(s.wonMaps[summary.mapId]) + 1;
+      }
+      if (summary.timeOfDay === 'night' || summary.weather === 'snow') s.nightWins = num(s.nightWins) + 1;
     } else {
       s.streak = 0;
+    }
+    const byClass = ['pistol', 'shotgun', 'sniper', 'smg', 'rifle', 'lmg'];
+    s.killsByClass = { ...(s.killsByClass && typeof s.killsByClass === 'object' ? s.killsByClass : {}) };
+    for (const cls of byClass) {
+      const key = `kills${cls[0].toUpperCase()}${cls.slice(1)}`;
+      const gain = num(summary[key]);
+      if (gain) s.killsByClass[cls] = num(s.killsByClass[cls]) + gain;
     }
     s.lossStreak = summary.won ? 0 : num(s.lossStreak) + 1;
     s.top3Streak = placed <= 3 ? num(s.top3Streak) + 1 : 0;
@@ -320,16 +488,25 @@ export class Meta {
     return !!(this.data.unlocked.skins.includes(entry.id) || this.data.unlocked.items.includes(entry.id));
   }
 
+  // 该外观是否只能靠成就获得（不能花钱买）
+  isAchievementOnly(item) {
+    return !!(item?.unlock && item.unlock.achievement);
+  }
+
   buySkin(skinId) {
     const item = getStoreItem(skinId);
     if (!item) return { ok: false, error: 'unknown-skin' };
     // 兼容旧 UI：商店任何外观都通过 buySkin 下单，非角色皮肤转交通用购买。
     if (item.kind !== 'character') return this.buyStoreItem(skinId);
     if (this.data.unlocked.skins.includes(skinId)) return { ok: true, already: true, id: skinId, credits: this.data.credits };
+    if (this.isAchievementOnly(item)) {
+      return { ok: false, error: 'achievement-required', achievement: item.unlock.achievement };
+    }
     if (num(this.data.level) < num(item.unlockLevel, 1)) return { ok: false, error: 'level-required', level: num(item.unlockLevel, 1) };
     if (num(this.data.credits) < num(item.price)) return { ok: false, error: 'not-enough-credits', price: num(item.price), credits: this.data.credits };
     this.data.credits = num(this.data.credits) - num(item.price);
     this.data.unlocked.skins.push(skinId);
+    this.data.stats.skinsOwned = this.cosmeticsOwned();
     this.save();
     return { ok: true, id: skinId, price: num(item.price), credits: this.data.credits };
   }
@@ -363,10 +540,14 @@ export class Meta {
     if (!item) return { ok: false, error: 'unknown-item' };
     if (item.kind === 'character') return this.buySkin(itemId);
     if (this.ownsAny(item)) return { ok: true, already: true, id: itemId, credits: this.data.credits };
+    if (this.isAchievementOnly(item)) {
+      return { ok: false, error: 'achievement-required', achievement: item.unlock.achievement };
+    }
     if (num(this.data.level) < num(item.unlockLevel, 1)) return { ok: false, error: 'level-required', level: num(item.unlockLevel, 1) };
     if (num(this.data.credits) < num(item.price)) return { ok: false, error: 'not-enough-credits', price: num(item.price), credits: this.data.credits };
     this.data.credits = num(this.data.credits) - num(item.price);
     this.data.unlocked.items.push(itemId);
+    this.data.stats.skinsOwned = this.cosmeticsOwned();
     this.save();
     return { ok: true, id: itemId, price: num(item.price), credits: this.data.credits };
   }

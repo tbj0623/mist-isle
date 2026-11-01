@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  单色主题图标（Android 13+ 长按壁纸取色上色；低版本自动忽略 adaptive-icon 的 monochrome 节点）。
+  与 foreground 同一套几何，纯白单层：岛屿剪影 + 准星 + 信号弧，去掉等高线等细节保证小尺寸可读。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,71 C33,62 42,58 50,57 C58,56 68,58 74,62 C77,64 78,67 78,71 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.4"
+        android:fillColor="#00000000"
+        android:pathData="M40.5,54 a13.5,13.5 0 1 0 27,0 a13.5,13.5 0 1 0 -27,0 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M54,31 v7.5 M54,69.5 v7.5 M30.5,54 h7.5 M69.5,54 h7.5" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:pathData="M64,38 a10,10 0 0 1 10,10" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M64,33 a15,15 0 0 1 15,15" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M51.6,54 a2.4,2.4 0 1 0 4.8,0 a2.4,2.4 0 1 0 -4.8,0 Z" />
+</vector>

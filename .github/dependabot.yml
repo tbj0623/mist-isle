@@ -1,0 +1,55 @@
+# 依赖与 Actions 的自动更新（Dependabot）
+#
+# 策略：每周一次、按生态分组，减少噪音。
+#   · npm 运行时依赖（three / ws / lucide）与开发依赖分开成组：前者改动危险，PR 里必须单独看；
+#   · GitHub Actions 的 major 版本也不手软——它们很少破坏，且能及时拿到 runner 的修复；
+#   · 不自动合并：游戏项目对渲染/协议回归非常敏感，任何升级都要走 CI + 人工点一遍。
+version: 2
+updates:
+  # ── npm ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '02:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: 'deps'
+      prefix-development: 'deps-dev'
+    groups:
+      # 运行时依赖：three / ws / lucide。禁止随意升级，PR 描述里会带上 release notes。
+      runtime:
+        applies-to: version-updates
+        dependency-type: production
+        update-types: [minor, patch]
+      # 开发工具链：esbuild / playwright / oxlint / prettier / axe-core
+      dev-tooling:
+        applies-to: version-updates
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # three 的 minor 版本包含渲染行为变更（0.180 → 0.181 就可能改光照/材质默认值），
+      # 只让 Dependabot 提 patch，minor/major 由人评估后手动改。
+      - dependency-name: three
+        update-types: [version-update:semver-minor, version-update:semver-major]
+      # lucide 是图标包的语义化版本，minor 也会加/删图标名；同样只收 patch。
+      - dependency-name: lucide
+        update-types: [version-update:semver-minor, version-update:semver-major]
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '02:30'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'ci'
+    groups:
+      actions:
+        patterns: ['*']
