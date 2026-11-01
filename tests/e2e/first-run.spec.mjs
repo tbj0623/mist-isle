@@ -99,3 +99,75 @@ test('移动端首页：试玩入口可触控、没有横向溢出', async ({ br
     await context.close();
   }
 });
+
+
+test('训练场局内教学：显示目标、允许跳过并记住选择', async ({ page }) => {
+  await boot(page, true);
+  await page.locator('#btn-quick-training').click();
+  await expectOfflineMode(page, 'training');
+  const guide = page.locator('#combat-guide');
+  await expect(guide).toBeVisible();
+  await expect(guide).toContainText('移动 5 米');
+  await expect(guide).toContainText('0 / 5');
+  await page.locator('#combat-guide-skip').click();
+  await expect(guide).toBeHidden();
+  const saved = await page.evaluate(() => ({
+    runtime: window.__mistApp.settings.combatGuideDone,
+    storage: JSON.parse(localStorage.getItem('mist-isle-settings-v2')).combatGuideDone,
+  }));
+  expect(saved).toEqual({ runtime: true, storage: true });
+  await page.evaluate(() => window.__mistApp.startOffline('training'));
+  await expectOfflineMode(page, 'training');
+  await expect(guide).toBeHidden();
+});
+
+test('非训练模式：不会显示实战教学卡片', async ({ page }) => {
+  await boot(page, true);
+  await page.evaluate(() => window.__mistApp.startOffline('solo'));
+  await expectOfflineMode(page, 'solo');
+  await expect(page.locator('#combat-guide')).toBeHidden();
+});
+
+
+test('横屏触控训练：教学卡片不遮挡摇杆，跳过按钮有足够触控面积', async ({ browser }) => {
+  const context = await browser.newContext({
+    viewport: { width: 844, height: 390 },
+    isMobile: true,
+    hasTouch: true,
+    deviceScaleFactor: 1,
+  });
+  try {
+    const page = await context.newPage();
+    await boot(page, true);
+    await page.locator('#btn-quick-training').tap();
+    await expectOfflineMode(page, 'training');
+    await expect(page.locator('#combat-guide')).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const rect = (selector) => {
+        const r = document.querySelector(selector).getBoundingClientRect();
+        return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      const guide = rect('#combat-guide');
+      const skip = rect('#combat-guide-skip');
+      const move = rect('#move-stick');
+      const aim = rect('#aim-stick');
+      const intersects = (a, b) => a.x < b.right && a.right > b.x && a.y < b.bottom && a.bottom > b.y;
+      return {
+        guide, skip,
+        hitsMove: intersects(guide, move),
+        hitsAim: intersects(guide, aim),
+        scrollWidth: document.documentElement.scrollWidth,
+      };
+    });
+    expect(layout.guide.bottom).toBeLessThan(195);
+    expect(layout.hitsMove).toBe(false);
+    expect(layout.hitsAim).toBe(false);
+    expect(layout.scrollWidth).toBeLessThanOrEqual(844);
+    expect(layout.skip.height).toBeGreaterThanOrEqual(44);
+    await page.screenshot({ path: 'artifacts/release/combat-guide-mobile.png' });
+    await page.locator('#combat-guide-skip').tap();
+    await expect(page.locator('#combat-guide')).toBeHidden();
+  } finally {
+    await context.close();
+  }
+});

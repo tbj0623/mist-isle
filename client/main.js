@@ -36,7 +36,7 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const DEFAULT_SETTINGS = {
   sfx: 0.75, music: 0.38, quality: 'balanced', sensitivity: 1, joystickScale: 1,
   autoFire: true, haptics: true, showFps: false, leftHanded: false, reducedMotion: false,
-  hint: 1, tutorialDone: false,
+  hint: 1, tutorialDone: false, combatGuideDone: false,
 };
 
 // 简单事件总线：UI 订阅 app.on(name, fn)，核心逻辑 app.emit(name, payload)
@@ -832,6 +832,7 @@ app.setPaused = (v) => { app.paused = !!v; };
 
 app.restartTutorial = function restartTutorial() {
   app.settings.tutorialDone = false;
+  app.settings.combatGuideDone = false;
   app.settings.hint = 1;
   // meta 存档里也有一份 tutorialDone；只清 settings 的话 maybeShowOnboarding()
   // 仍会被 meta 那份判成「已看过」直接跳过。

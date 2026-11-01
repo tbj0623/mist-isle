@@ -1,7 +1,7 @@
 # 雾岛突围 / MIST ISLE — 持续集成
 #
 # 目标：push 到 main 与所有 PR 都要过「构建 + 静态检查 + 单测 + 覆盖率」四道闸门；
-# e2e（Playwright）单列一个 job，失败不阻塞合并但必须留下 trace/截图供排查。
+# e2e（Playwright）单列一个 job，失败应阻塞合并并留下 trace/截图供排查。
 #
 # 设计要点：
 #   · matrix 跑 Node 22（engines 下限）与 24（当前 LTS 线），两端都要绿。
@@ -101,9 +101,7 @@ jobs:
     name: e2e (playwright)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # e2e 依赖构建产物，但不必等 matrix 全部结束；单独跑一份保证「可合并」的判断不卡在浏览器上。
-    # 允许失败：CI 不因为 WebGL/软件渲染抖动而红，人工按 artifact 复查。
-    continue-on-error: true
+    # e2e 独立跑一份；失败时红灯并上传 trace，不能让 UI 回归隐藏在绿色 CI 中。
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -157,9 +155,7 @@ jobs:
     name: android (assembleDebug + lint)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # 允许失败：Android 壳层的构建受 SDK/AGP 版本波动影响，
-    # 红叉需要人工判断是壳层回归还是上游依赖抖动；但产物必须上传，供下载安装验证。
-    continue-on-error: true
+    # Android 构建已在 Linux Runner 验证通过，后续失败同样阻塞合并。
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -12940,3 +12940,49 @@ body.quality-low #hud .hud-panel {
     transition: none;
   }
 }
+
+
+/* v1.4 · 训练场实战任务：保留中心准星和左右摇杆的可视/可点区域。 */
+#hud.in-match #combat-guide { pointer-events: auto; }
+#hud #combat-guide {
+  position: absolute;
+  z-index: 24;
+  top: clamp(66px, 11vh, 100px);
+  left: 50%;
+  width: min(340px, calc(100% - 28px));
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  padding: 11px 14px 12px;
+  color: #effff8;
+  background: linear-gradient(135deg, rgba(12, 30, 30, .94), rgba(20, 48, 43, .9));
+  border: 1px solid rgba(125, 228, 183, .5);
+  border-radius: 13px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+}
+#hud #combat-guide.hidden { display: none !important; }
+#hud .combat-guide-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#hud .combat-guide-eyebrow { font-size: 10px; font-weight: 800; letter-spacing: .1em; color: #84e7b8; }
+#hud .combat-guide-skip {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid rgba(195, 232, 218, .42);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .07);
+  color: #ecfff5;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+#hud .combat-guide-skip:focus-visible { outline: 2px solid #8de9b7; outline-offset: 2px; }
+#hud .combat-guide-progress { display: block; margin: 4px 0 2px; color: #b4cabd; font-size: 10px; }
+#hud .combat-guide-task { display: block; font-size: 17px; line-height: 1.3; letter-spacing: .01em; }
+#hud .combat-guide-hint { margin: 3px 0 0; font-size: 12px; line-height: 1.4; color: #c0dfcf; }
+@media (max-height: 480px) {
+  #hud #combat-guide { top: 47px; padding: 6px 10px 7px; width: min(290px, calc(100% - 22px)); }
+  #hud .combat-guide-task { font-size: 13px; }
+  #hud .combat-guide-hint { font-size: 10px; margin-top: 0; }
+  #hud .combat-guide-progress { margin: 0; }
+  #hud .combat-guide-skip { min-height: 44px; min-width: 72px; }
+}
+
+#hud #combat-guide { display: flex; flex-direction: column; align-items: stretch; gap: 0; text-align: left; }

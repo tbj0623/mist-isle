@@ -4,6 +4,7 @@
 // 全程 textContent，不拼 innerHTML，不在每帧创建 DOM。
 
 import { RARITY_NAMES, RARITY_COLORS, REVIVE_TIME, BLEEDOUT_TIME, HORDE } from '../shared/rules.mjs';
+import { COMBAT_TASKS, createCombatGuide, observeCombatMovement, observeCombatEvent, combatGuideStatus } from './training-guide.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -1597,6 +1598,7 @@ function processEvents(state) {
   for (const event of events) {
     if (event.id <= last.events) continue;
     last.events = Math.max(last.events, event.id ?? 0);
+    trainingGuideEvent(event, selfId);
     switch (event.type) {
       case 'shot': {
         // 记录「谁最后用什么武器开火」→ kill feed 显示武器名
@@ -1886,6 +1888,58 @@ function injectHudEventStyles() {
   document.head.append(style);
 }
 
+// ── 训练场 · 目标式局内教学（首局默认显示，可跳过/重新播放） ─────────────
+let combatGuide = null;
+function buildCombatGuide(host) {
+  const panel = h('section', 'combat-guide hud-panel hidden');
+  panel.id = 'combat-guide';
+  panel.setAttribute('aria-label', '训练场实战教学');
+  const head = h('div', 'combat-guide-head');
+  const eyebrow = h('span', 'combat-guide-eyebrow', '实战教学 · TRAINING');
+  const skip = h('button', 'combat-guide-skip', '跳过教学');
+  skip.type = 'button';
+  skip.id = 'combat-guide-skip';
+  skip.addEventListener('click', () => finishCombatGuide(false));
+  head.append(eyebrow, skip);
+  const progress = h('small', 'combat-guide-progress', `0 / ${COMBAT_TASKS.length}`);
+  const title = h('b', 'combat-guide-task', '移动 5 米');
+  const hint = h('p', 'combat-guide-hint', '按 WASD 移动');
+  panel.append(head, progress, title, hint);
+  host.append(panel);
+  R.combatGuide = { panel, progress, title, hint };
+}
+function finishCombatGuide(completed) {
+  if (!combatGuide) return;
+  combatGuide = null;
+  R.combatGuide?.panel.classList.add('hidden');
+  if (app?.settings) app.settings.combatGuideDone = true;
+  try { app?.saveSettings?.(); } catch { /* 浏览器禁用持久化也不应中断游戏 */ }
+  hudToastEvent(app, completed ? '训练目标达成 · 继续探索战场！' : '已跳过教学 · 可以在设置中重新开启', 2400);
+}
+function refreshCombatGuide() {
+  if (!combatGuide || !R.combatGuide) return;
+  const status = combatGuideStatus(combatGuide);
+  if (!status.next) { finishCombatGuide(true); return; }
+  setText(R.combatGuide.progress, `${status.count} / ${status.total} 已完成`);
+  setText(R.combatGuide.title, status.next.title);
+  const touch = app?.touch === true || (app?.touch === undefined && COARSE_POINTER);
+  setText(R.combatGuide.hint, touch ? status.next.touch : status.next.desktop);
+  R.combatGuide.panel.classList.remove('hidden');
+}
+function resetCombatGuide() {
+  combatGuide = app?.offline && app?.modeId === 'training' && !app?.settings?.combatGuideDone
+    ? createCombatGuide() : null;
+  R.combatGuide?.panel.classList.toggle('hidden', !combatGuide);
+  refreshCombatGuide();
+}
+function trainingGuideEvent(event, selfId) {
+  if (observeCombatEvent(combatGuide, event, selfId)) refreshCombatGuide();
+}
+function updateCombatGuide(state, me) {
+  if (!combatGuide || state?.phase !== 'live' || !me) return;
+  if (observeCombatMovement(combatGuide, me)) refreshCombatGuide();
+}
+
 export function initHud(application) {
   app = application || {};
   if (built) return;
@@ -1902,6 +1956,7 @@ export function initHud(application) {
   buildCenter(host);
   buildFeed(host);
   buildExtras(host);
+  buildCombatGuide(host);
   buildTouch(host);
   buildFullMapModal();
   bindGlobal();
@@ -1936,9 +1991,12 @@ export function showHud(value = true) {
     if (R.toastBox) clear(R.toastBox);
     last.events = 0;
     resetCache();
+    combatGuide = null;
+    R.combatGuide?.panel.classList.add('hidden');
   } else {
     const firstId = Number(app?.state?.events?.[0]?.id || 0);
     last.events = Math.max(0, firstId - 1);
+    resetCombatGuide();
   }
 }
 
@@ -1994,6 +2052,7 @@ export function updateHud(application, state, dt) {
   updateDeploy(state, me);
   updateHorde(state);
   processEvents(state);
+  updateCombatGuide(state, me);
   if (now - last.map >= MAP_MS && R.minimap) {
     last.map = now;
     drawMinimap(R.minimap, state, me);

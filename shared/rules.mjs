@@ -1,7 +1,7 @@
 // 雾岛突围 / MIST ISLE — 共享常量（冻结文件，禁止他人修改）
 // 所有单位：位置=米、时间=秒、角度=弧度（0 指向 +Z，x 分量 = sin(angle)）
 
-export const VERSION = '1.3.1';
+export const VERSION = '1.4.0';
 export const PROTOCOL_VERSION = 3;
 
 export const TICK_RATE = 30;
