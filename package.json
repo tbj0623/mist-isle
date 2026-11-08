@@ -49,11 +49,11 @@
     "ws": "8.22.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.0",
+    "@playwright/test": "1.64.1",
     "axe-core": "^4.14.0",
     "esbuild": "0.28.2",
     "lucide": "1.53.0",
-    "oxlint": "^1.90.0",
+    "oxlint": "^1.91.0",
     "prettier": "^3.9.10",
     "three": "0.180.0"
   }
