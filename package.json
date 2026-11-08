@@ -46,7 +46,7 @@
     "benchmark:wire": "node scripts/benchmark-wire.mjs"
   },
   "dependencies": {
-    "ws": "8.22.0"
+    "ws": "8.22.1"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",
